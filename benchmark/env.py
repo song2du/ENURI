@@ -116,6 +116,30 @@ def _other(side: str) -> str:
     return "counterpart" if side == "agent" else "agent"
 
 
+def _other_role(role: Role) -> Role:
+    return Role.SELLER if role == Role.BUYER else Role.BUYER
+
+
+def _price_out_of_bounds(price: float, episode: Episode) -> bool:
+    """Appendix B.3 (i): p_min <= p_k <= p_max 위반."""
+    return price < episode.p_min or price > episode.p_max
+
+
+def _worse_than_own_reservation(turn: str, price: float, episode: Episode) -> bool:
+    """Appendix B.3 (ii): 행위자 본인 reservation보다 엄격히 나쁜 가격을 offer/accept.
+
+    "r_A"라는 논문 표기는 두 플레이어(A/B)를 일반화한 것 -- 실제로 행위자가
+    agent 턴이면 role_A/r_A, counterpart 턴이면 그 반대 role/t_B.r을 쓴다.
+    counterpart는 kernel.py의 클리핑(opening offer를 [r_B,p_max]/[p_min,r_B]로
+    제한 + accept 전 favorability>=0 게이트)으로 구조적으로 이 조건에 걸릴 일이
+    없다 -- 그래도 "누구 턴인지"에 무관하게 항상 성립해야 하는 일반 유틸리티로
+    작성해, 나중에 kernel이 바뀌어도 안전하게 잡히도록 함.
+    """
+    role = episode.role_A if turn == "agent" else _other_role(episode.role_A)
+    r = episode.r_A if turn == "agent" else episode.t_B.r
+    return utility(role, price, r) < 0
+
+
 def utility(role: Role, outcome: object, r: float) -> float:
     """u_buyer(p) = r_buyer - p, u_seller(p) = p - r_seller, both 0 on DISAGREEMENT."""
     if outcome is DISAGREEMENT:
@@ -244,9 +268,17 @@ def sample_episode(
 
 
 def run_episode(episode: Episode, agent_policy, counterpart_policy, rng: random.Random) -> EpisodeResult:
-    """Alternating-offer protocol 루프. implementation/env.py의 run_episode와 완전히 동일 --
-    cited_defect_ids는 Action의 필드일 뿐이라 이 루프 자체는 변경이 필요 없다
-    (history에 Action 객체를 그대로 저장하므로 인용 정보도 같이 보존된다).
+    """Alternating-offer protocol 루프. implementation/env.py의 run_episode를 뼈대로 하되,
+    Appendix B.3의 (i) 가격범위 / (ii) IR 위반 감지를 추가한다 (2026-07-13, 이전엔
+    accept_before_any_offer 한 종류만 감지 -- paper/paper-code-map.md 5.2절, benchmark/
+    CLAUDE.md 2026-07-12 항목에 기록된 버그). cited_defect_ids는 Action의 필드일 뿐이라
+    루프 구조 자체는 바뀌지 않는다.
+
+    accept_before_any_offer와 달리 (i)/(ii) 위반은 즉시 DISAGREEMENT로 끊지 않는다 --
+    "받아들일 대상 자체가 없어 결과가 정의 불가능"한 accept_before_any_offer와 달리,
+    가격범위/IR 위반은 "이상하지만 결과는 정의 가능한 제안"이라 violations에 기록만
+    하고 협상을 그대로 진행시킨다 (LLM이 이상한 값을 내도 벤치마크가 죽지 않아야 한다는
+    implementation/env.py의 기존 철학과 동일).
     """
     history: list[tuple[int, str, Action]] = []
     violations: list[tuple[int, str, str]] = []
@@ -260,6 +292,16 @@ def run_episode(episode: Episode, agent_policy, counterpart_policy, rng: random.
         if action.decision == Decision.ACCEPT and last_offer[_other(turn)] is None:
             violations.append((k, turn, "accept_before_any_offer"))
             return EpisodeResult(outcome=DISAGREEMENT, history=history, violations=violations)
+
+        if action.decision == Decision.OFFER:
+            if _price_out_of_bounds(action.price, episode):
+                violations.append((k, turn, "price_out_of_bounds"))
+            if _worse_than_own_reservation(turn, action.price, episode):
+                violations.append((k, turn, "ir_violation"))
+        elif action.decision == Decision.ACCEPT and _worse_than_own_reservation(
+            turn, last_offer[_other(turn)], episode
+        ):
+            violations.append((k, turn, "ir_violation"))
 
         history.append((k, turn, action))
 
