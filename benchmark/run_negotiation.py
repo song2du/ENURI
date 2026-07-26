@@ -26,7 +26,8 @@ import argparse
 import random
 
 from env import sample_episode, run_episode
-from kernel import FAMILIES, make_counterpart_policy
+from fixed_concession_agent import FC_RATES, make_fixed_concession_policy
+from kernel import FAMILIES, make_counterpart_policy, stance_prior_for
 from llm_agent import make_llm_agent_policy
 from metrics import EpisodeRecord, compute_metrics
 from voice import add_voice
@@ -36,6 +37,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GPT agent vs 규칙기반 counterpart 협상 실행 (+ 배치 metric)")
     parser.add_argument("--seed", type=int, default=1, help="랜덤 시드 (episode 배치 재현용)")
     parser.add_argument("--model", type=str, default="gpt-4o", help="agent에 쓸 OpenAI 모델")
+    parser.add_argument(
+        "--fc-rate", type=str, default=None, choices=list(FC_RATES.keys()),
+        help="agent를 LLM 대신 fixed-concession baseline으로 대체 (FC-1/FC-10/FC-30) -- "
+             "API 키 없이 배관 테스트할 때도 유용 (--model은 이때 무시됨)",
+    )
     parser.add_argument(
         "--family", type=str, default="Candid", choices=list(FAMILIES.keys()), help="counterpart family"
     )
@@ -50,17 +56,25 @@ def main() -> None:
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
-    agent_policy = make_llm_agent_policy(model=args.model)
+    if args.fc_rate is not None:
+        agent_policy = make_fixed_concession_policy(FC_RATES[args.fc_rate])
+    else:
+        agent_policy = make_llm_agent_policy(model=args.model)
     counterpart_policy = make_counterpart_policy(args.family)
     if args.voice:
         counterpart_policy = add_voice(counterpart_policy)
+    # 2026-07-25 버그 수정: family의 stance_prior가 지금까지 sample_episode에 전달되지
+    # 않아서 (예: Adversarial의 aggressive-skewed 확률이) 무시되고 있었음 -- env.py의
+    # sample_episode docstring 참고. args.family 하나로 한 번만 계산해서 매 episode에 재사용.
+    stance_weights = stance_prior_for(args.family)
 
-    print(f"model={args.model} family={args.family} episodes={args.episodes} voice={args.voice}")
+    agent_label = args.fc_rate if args.fc_rate is not None else args.model
+    print(f"agent={agent_label} family={args.family} episodes={args.episodes} voice={args.voice}")
     print()
 
     records: list[EpisodeRecord] = []
     for i in range(1, args.episodes + 1):
-        episode = sample_episode(rng)
+        episode = sample_episode(rng, stance_weights=stance_weights)
         result = run_episode(episode, agent_policy, counterpart_policy, rng)
         records.append(EpisodeRecord(episode=episode, result=result))
 

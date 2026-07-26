@@ -5,11 +5,13 @@
 implementation/kernel.py를 import하지 않고 독립적으로 복사+확장했다 (이유는
 env.py 모듈 docstring과 동일 -- implementation/은 학습용, benchmark/는 결과물).
 
-프로토타입 스코프: 6 family 중 `Candid` 하나만 구현한다 (benchmark/CLAUDE.md
-2026-07-11 결정 -- 가장 특이 성향 없는 베이스라인으로 grounding/utilization
-metric 배관부터 노이즈 없이 검증하기 위함). 두 번째 family(예: Adversarial)는
-시간이 남으면 ECON_PRESETS/FAMILIES에 항목을 추가하는 것만으로 확장 가능하도록
-구조는 유지해둔다.
+6 family 전부 구현 (benchmark/CLAUDE.md 2026-07-23 결정 -- 협상 자체의
+로버스트니스 검증은 evidence 축과 별개로 여전히 유효한 질문이라
+implementation/kernel.py의 6 family를 그대로 이식). 프로토타입 단계
+(2026-07-11)에서는 grounding/utilization metric 배관을 노이즈 없이 검증하기
+위해 `Candid` 하나로 좁혔었으나, 그 검증이 끝나 이제 전체로 복원한다.
+ECON_PRESETS/FAMILIES 값은 implementation/kernel.py에서 그대로 복사 --
+거기서 이미 200 episode x 6 family 통합테스트로 검증된 값이라 재검증 불필요.
 """
 
 from __future__ import annotations
@@ -110,32 +112,62 @@ ALPHA, BETA, GAMMA = 6.0, 1.0, 2.0
 K_WALK_FRAC = 0.5
 PHI0, PHI_DELTA, PHI_T = -4.5, 30.0, 1.5
 
-EVIDENCE_BONUS = 2.0  # NEW: benchmark/CLAUDE.md "커널 -- evidence를 accept_prob에 반영" 참고. 크기는 프로토타입 단계 임시값 -- 실제로 돌려보고 튜닝 필요.
+# NEW (2026-07-25): quadrant별로 보너스 크기를 달리하는 lookup table -- TERMS-Bench가
+# stance별로 rho_F(eta_B)/xi_F(eta_B)를 다르게 주는 것(_lookup_by_stance)과 같은 패턴을
+# evidence 축에도 적용. 이전엔 EVIDENCE_BONUS 단일 상수라 quadrant 태그가 accept_prob에
+# 전혀 영향을 못 줬음 -- subtle_misaligned_gap 같은 "사후 분석 라벨"로만 쓰이고 시뮬레이터
+# 자체는 quadrant를 무시했던 게 실제 설계 갭이었음 (교수님 코멘트로 지적됨).
+#
+# 값 자체는 EVIDENCE_BONUS=2.0이 그랬던 것처럼 프로토타입 단계 임의값 -- 튜닝 필요. 다만
+# 방향성은 의도적으로 설계함:
+# - obvious_aligned: 쉽게 보이고 실제로도 심각 -- 인용해도 "누구나 할 수 있는 것"이라 기본 보너스
+# - subtle_aligned: 찾기 어려운데 실제로 심각 -- 순수 detection 성공에 큰 보너스
+# - obvious_misaligned: 눈에 띄지만 실제 영향 적음 -- 그냥 언급만으론 counterpart를 별로
+#   설득 못 해야 함(과잉반응을 경제적으로 보상하면 안 됨) -- 가장 작은 보너스
+# - subtle_misaligned: 찾기도 어렵고 실제로 심각(가장 어려운 사분면) -- detection+grounding
+#   둘 다 성공한 것이므로 최대 보너스
+QUADRANT_BONUS = {
+    "obvious_aligned": 1.0,
+    "subtle_aligned": 3.0,
+    "obvious_misaligned": 0.5,
+    "subtle_misaligned": 4.0,
+}
+_DEFAULT_BONUS = 2.0  # quadrant 미지정(None, 예: 아직 태깅 안 된 결함)일 때의 폴백 -- 기존 EVIDENCE_BONUS와 동일값 유지
 
 
 def evidence_term_for(agent_action: Action | None, item: Item, role_A: Role) -> float:
-    """agent의 이번 offer가 실제 결함을 인용했는지에 따른 accept_prob 보정항.
+    """agent의 이번 offer가 실제 결함을 인용했는지, 그리고 그 결함이 어떤 quadrant인지에
+    따른 accept_prob 보정항.
 
-    benchmark/CLAUDE.md 2026-07-11 결정 (두 번 수정된 최종안):
+    benchmark/CLAUDE.md 2026-07-11 결정(부호 방향) + 2026-07-25 결정(크기를 quadrant별로
+    분화):
     - BUYER가 실제 결함을 인용하며 (낮은) 가격을 부르면: 그 가격의 근거가
-      강해지므로 +EVIDENCE_BONUS -- counterpart(SELLER)가 더 받아들이기 쉬워짐.
+      강해지므로 +보너스 -- counterpart(SELLER)가 더 받아들이기 쉬워짐.
     - SELLER가 자기 결함을 인정하면서 가격을 안 낮추면: 그 (높은) 가격의 근거가
-      약해지므로 -EVIDENCE_BONUS -- counterpart(BUYER)가 덜 받아들이려 함.
+      약해지므로 -보너스 -- counterpart(BUYER)가 덜 받아들이려 함.
+    - 보너스 **크기**는 이제 QUADRANT_BONUS에서 그 결함의 quadrant로 조회 (quadrant가
+      None이면 _DEFAULT_BONUS).
     - 지어낸(ground truth에 없는) 결함 인용은 이 항에 영향 없음 -- 할루시네이션은
       metrics.py의 hallucination_rate가 별도로 채점한다. 여기서 경제적으로
       보상/처벌하지 않는 이유: 두 관심사(경제적 협상 역학 vs. 사실관계 정확성
       채점)를 분리해서 커널을 단순하게 유지하기 위함.
 
+    !! Simplification (다중 인용) !! 한 턴에 실제 결함을 여러 개 인용하면, 그 중
+    **가장 큰 보너스**를 주는 quadrant를 기준으로 삼는다 (severity_calibration이
+    다중 인용 턴을 아예 제외하는 것과는 다른 선택 -- 여긴 매 턴 반드시 값 하나를
+    내야 하는 실시간 시뮬레이터라, 사후 통계처럼 애매한 데이터를 버릴 수가 없음).
+
     agent_action이 None이거나 cited_defect_ids가 비어있으면 0.0 (효과 없음).
     """
     if agent_action is None or not agent_action.cited_defect_ids:
         return 0.0
-    real_ids = {d.id for d in item.ground_truth_defects}
-    cited_real_defect = any(cid in real_ids for cid in agent_action.cited_defect_ids)
-    if not cited_real_defect:
+    real_defects_by_id = {d.id: d for d in item.ground_truth_defects}
+    cited_real = [real_defects_by_id[cid] for cid in agent_action.cited_defect_ids if cid in real_defects_by_id]
+    if not cited_real:
         return 0.0
+    bonus = max(QUADRANT_BONUS.get(d.quadrant, _DEFAULT_BONUS) for d in cited_real)
     sign = _agent_sign(role_A)  # BUYER -> +1, SELLER -> -1. B섹션의 부호 관례를 그대로 재사용.
-    return sign * EVIDENCE_BONUS
+    return sign * bonus
 
 
 def accept_prob(
@@ -298,28 +330,50 @@ def sample_cues(
 
 
 # ---------------------------------------------------------------------------
-# G. Family preset -- 프로토타입은 Candid 하나만 (benchmark/CLAUDE.md 2026-07-11 결정)
+# G. Family preset -- 6 family 전부 (Appendix C.1, Table 3/4; implementation/kernel.py G섹션과 동일)
 # ---------------------------------------------------------------------------
 
 STANCES = ("conciliatory", "neutral", "aggressive")
 
 ECON_PRESETS = {
-    "type_instrumental": {  # Candid가 쓰는 프리셋. 다른 프리셋(high_reactivity 등)은 2번째 family 추가할 때 implementation/kernel.py G섹션에서 옮겨오면 됨.
+    "type_instrumental": {  # Candid, Taciturn이 공유하는 프리셋
         "rho": (0.0, -0.25, -0.75),
         "xi": (0.40, 0.0, -0.50),
         "lambda2": (0.30, 0.50, 1.00),
+        "noise_std_frac": 0.01,
+    },
+    "high_reactivity": {  # Expressive, Strategic이 공유하는 프리셋
+        "rho": (0.0, -0.75, -1.50),
+        "xi": (0.40, 0.0, -0.75),
+        "lambda2": (0.45, 0.90, 1.80),
+        "noise_std_frac": 0.03,
+    },
+    "moderate_stochastic": {  # Stochastic 전용 -- 가격 노이즈가 가장 큼
+        "rho": (0.0, -0.50, -1.10),
+        "xi": (0.35, 0.0, -0.60),
+        "lambda2": (0.35, 0.70, 1.40),
+        "noise_std_frac": 0.08,
+    },
+    "hardball": {  # Adversarial 전용
+        "rho": (-0.25, -1.25, -2.25),
+        "xi": (0.0, -0.50, -1.20),
+        "lambda2": (0.60, 1.40, 2.60),
         "noise_std_frac": 0.01,
     },
 }
 
 FAMILIES = {
     "Candid": {"econ": "type_instrumental", "cue": "accurate", "stance_prior": None},
-    # 2번째 family는 시간 남으면 여기 + ECON_PRESETS에 항목 추가 (benchmark/CLAUDE.md 참고, 예: Adversarial).
+    "Taciturn": {"econ": "type_instrumental", "cue": "uninformative", "stance_prior": None},
+    "Expressive": {"econ": "high_reactivity", "cue": "accurate", "stance_prior": None},
+    "Strategic": {"econ": "high_reactivity", "cue": "uninformative", "stance_prior": None},
+    "Stochastic": {"econ": "moderate_stochastic", "cue": "noisy", "stance_prior": None},
+    "Adversarial": {"econ": "hardball", "cue": "pressuring", "stance_prior": (0.05, 0.15, 0.80)},
 }
 
 
 def stance_prior_for(family_name: str) -> tuple[float, float, float]:
-    """Pr(stance = C, N, A). Candid는 균등."""
+    """Pr(stance = C, N, A). ADVERSARIAL만 aggressive로 치우치고, 나머지는 균등 (Appendix C.1)."""
     override = FAMILIES[family_name]["stance_prior"]
     return override if override is not None else (1 / 3, 1 / 3, 1 / 3)
 
