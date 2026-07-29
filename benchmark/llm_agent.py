@@ -19,9 +19,17 @@ CraigslistBargain 실제 이미지로 "이미지+forced tool call이 같이 동�
 base64 data URI로 전송한다. (2) agent는 ground-truth Defect.id를 절대 못 보므로(정보
 비공개 규약), 결함을 인용하려면 "무슨 문자열을 써야 하는지" 알 방법이 없었다 -- 2026-07-25
 결정(logs/2026-07-25.md)대로, id 대신 **닫힌 태그 어휘**(defect_type 7종)를 프롬프트에
-미리 공개하고 "<type>_0" 형식으로 인용하게 한다 (실 데이터는 아이템당 결함이 0~1개뿐이라
-"_0" 접미사가 항상 맞음). 이 어휘 공개는 "이 아이템에 실제로 어떤 결함이 있는지"를 새는 게
-아니라 "결함 카테고리가 이렇게 나뉜다"만 공개하는 것이라 정보 비공개 규약과 안 충돌한다.
+미리 공개하고 그 단어 자체로 인용하게 한다. 이 어휘 공개는 "이 아이템에 실제로 어떤 결함이
+있는지"를 새는 게 아니라 "결함 카테고리가 이렇게 나뉜다"만 공개하는 것이라 정보 비공개
+규약과 안 충돌한다.
+
+!! id -> defect_type 매칭으로 단순화 (2026-07-28, 사용자 결정) !! 처음엔 "<type>_0"
+형식(Defect.id 그대로)으로 인용하게 시켰는데, 아이템당 결함이 0~1개뿐이라 "_0" 접미사는
+항상 고정값이라 아무 정보가 없다 -- 그런데 agent가 그 접미사를 빼먹거나 대소문자를
+틀리면 실제로 결함을 맞게 봤는데도 citation_precision 등에서 "실패"로 잡혔다. 측정
+목표는 "형식을 맞추는가"가 아니라 "인용해서 써먹는가"이므로, 접미사를 아예 없애고
+defect_type 단어 자체로만 비교한다 (대소문자/공백은 여기서 정규화). kernel.py/metrics.py도
+Defect.id 대신 Defect.defect_type으로 매칭하도록 같이 수정됨 (decisions_log.md 참고).
 
 model 기본값은 gpt-4o (2026-07-11 결정): 전략적 판단이 필요한 쪽(agent)에 더 강한 모델을,
 단순 렌더링만 하는 voice.py 쪽(gpt-4o-mini)에는 가벼운 모델을 배분 -- voice.py 모듈 docstring 참고.
@@ -83,9 +91,9 @@ _NEGOTIATE_TOOL = {
                 "cited_defect_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "IDs of defects you actually observed in the photo and are citing this "
-                    "message, formatted as '<type>_0' (e.g. 'scratch_0') using the defect type list given "
-                    "in the prompt. Empty array if you don't cite any defect this turn.",
+                    "description": "Defect type(s) you actually observed in the photo and are citing this "
+                    "message, using the defect type list given in the prompt (e.g. 'scratch'). Empty array "
+                    "if you don't cite any defect this turn.",
                 },
             },
             "required": ["decision", "price", "message", "cited_defect_ids"],
@@ -146,7 +154,9 @@ def _image_url(item) -> str:
     return f"data:image/{_sniff_image_mime(raw)};base64,{data}"
 
 
-def _build_prompt(episode: Episode, history: list[tuple[int, str, Action]], side: str) -> tuple[str, str]:
+def _build_prompt(
+    episode: Episode, history: list[tuple[int, str, Action]], side: str, *, include_image: bool
+) -> tuple[str, str]:
     role = episode.role_A  # 이 policy는 agent 전용이라 side는 항상 "agent"
     k = len(history) + 1
     item = episode.item
@@ -158,9 +168,9 @@ def _build_prompt(episode: Episode, history: list[tuple[int, str, Action]], side
     )
     photo_line = (
         "\nA photo of the item is attached above -- look it over before deciding your move. "
-        "If you notice a defect, cite it in cited_defect_ids as '<type>_0' where <type> is one of: "
+        "If you notice a defect, cite it in cited_defect_ids using its type, one of: "
         f"{', '.join(_DEFECT_TAG_VOCAB)}."
-    ) if _has_real_image(item) else ""
+    ) if include_image else ""
     user = f"""Item for sale:
 - Category: {item.category}
 - Title: {item.title}
@@ -179,27 +189,31 @@ What is your move this round?"""
     return system, user
 
 
-def _user_content(episode: Episode, user_text: str) -> str | list[dict]:
-    """_has_real_image가 참이면 OpenAI 비전 API 형식(텍스트+image_url 블록 리스트)으로,
+def _user_content(episode: Episode, user_text: str, *, include_image: bool) -> str | list[dict]:
+    """include_image가 참이면 OpenAI 비전 API 형식(텍스트+image_url 블록 리스트)으로,
     아니면 기존처럼 평범한 문자열로 반환 -- 이미지 없는 기존 mock 경로는 동작이 안 바뀐다."""
-    item = episode.item
-    if not _has_real_image(item):
+    if not include_image:
         return user_text
     return [
         {"type": "text", "text": user_text},
-        {"type": "image_url", "image_url": {"url": _image_url(item)}},
+        {"type": "image_url", "image_url": {"url": _image_url(episode.item)}},
     ]
 
 
-def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai"):
-    """kernel.py의 make_counterpart_policy와 같은 팩토리 패턴 -- model/provider를 클로저에
-    가둬서 policy(episode, history, side, rng) -> Action 시그니처에 맞춘 함수를 반환한다.
+def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai", use_image: bool = True):
+    """kernel.py의 make_counterpart_policy와 같은 팩토리 패턴 -- model/provider/use_image를
+    클로저에 가둬서 policy(episode, history, side, rng) -> Action 시그니처에 맞춘 함수를 반환한다.
 
     provider="openai"(기본값): 기존 동작 그대로, OPENAI_API_KEY로 OpenAI에 직결.
     provider="openrouter": 같은 OpenAI SDK 클라이언트를 OpenRouter의 base_url로 돌려서
     Claude/Gemini/Qwen 등 다른 provider 모델도 같은 코드 경로로 호출 (모듈 docstring의
     "multi-provider 지원" 절 참고). model 문자열은 이때 "anthropic/claude-opus-4.6"처럼
     OpenRouter 네이밍을 써야 한다.
+
+    use_image=False(2026-07-29 추가, pulse.pptx 슬라이드6 "visual 유/무 baseline"): 실 이미지가
+    있어도 일부러 안 보낸다 -- item.image_ref가 실제 이미지인지(_has_real_image, 데이터 사실)와
+    이번 실행이 그걸 실제로 쓸지(use_image, 실험 조건)를 분리해서, "이미지를 줬을 때와 안 줬을
+    때 협상 결과가 달라지는가"라는 gap을 같은 아이템으로 비교할 수 있게 한다.
     """
     if provider == "openai":
         client = OpenAI()  # OPENAI_API_KEY는 load_dotenv()로 이미 환경변수에 로드됨
@@ -209,12 +223,13 @@ def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai"):
         raise ValueError(f"unknown provider: {provider!r} (expected 'openai' or 'openrouter')")
 
     def policy(episode: Episode, history: list[tuple[int, str, Action]], side: str, rng: random.Random) -> Action:
-        system, user = _build_prompt(episode, history, side)
+        include_image = use_image and _has_real_image(episode.item)
+        system, user = _build_prompt(episode, history, side, include_image=include_image)
         response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": _user_content(episode, user)},
+                {"role": "user", "content": _user_content(episode, user, include_image=include_image)},
             ],
             tools=[_NEGOTIATE_TOOL],
             tool_choice={"type": "function", "function": {"name": "negotiate_action"}},
@@ -224,7 +239,9 @@ def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai"):
 
         decision = Decision[args["decision"]]
         price = float(args["price"]) if args.get("price") is not None else None
-        cited = tuple(args.get("cited_defect_ids") or []) or None
+        # 대소문자/공백만 정규화 -- defect_type 자체가 틀렸으면(할루시네이션) 그대로 안 걸러지고
+        # kernel.py/metrics.py의 defect_type 매칭에서 "실제 없는 결함"으로 정상적으로 잡혀야 함.
+        cited = tuple(c.strip().lower() for c in (args.get("cited_defect_ids") or [])) or None
 
         return Action(decision=decision, price=price, message=args.get("message"), cited_defect_ids=cited)
 

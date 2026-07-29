@@ -84,7 +84,7 @@ def make_citing_dummy_agent(
                 cited_ids = ("fake_defect_xyz",)  # 지어낸 결함 -- hallucination_rate용
             else:
                 d = real_defects[rng.randrange(len(real_defects))]
-                cited_ids = (d.id,)
+                cited_ids = (d.defect_type,)  # 2026-07-28: 매칭이 Defect.id -> defect_type으로 바뀜 (decisions_log.md)
                 extra_concession_frac = severity_scale * d.price_impact  # 심각도에 비례해서 더 크게 움직임
 
         concession_frac = base_concession_frac + extra_concession_frac

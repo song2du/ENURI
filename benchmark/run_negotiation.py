@@ -23,21 +23,105 @@ citation_precision류 metric에 영향 안 준다"는 이유로 배치(--episode
 from __future__ import annotations
 
 import argparse
+import json
 import random
+from pathlib import Path
 
 from data_loader import load_items
-from env import sample_episode, run_episode
+from env import DISAGREEMENT, sample_episode, run_episode
 from fixed_concession_agent import FC_RATES, make_fixed_concession_policy
 from kernel import FAMILIES, make_counterpart_policy, stance_prior_for
 from llm_agent import make_llm_agent_policy
 from metrics import EpisodeRecord, compute_metrics
 from voice import add_voice
 
+# episode 기록(JSONL) 기본 저장 위치 -- benchmark/result/episodes.jsonl. 여기 상수만 바꾸면
+# 저장 위치가 코드 전체에서 바뀐다 (2026-07-28, 매번 --log-path를 안 줘도 되게).
+# __file__ 기준 절대경로라 run_negotiation.py를 어느 작업 디렉터리에서 실행해도 항상
+# benchmark/result/를 가리킨다.
+DEFAULT_LOG_PATH = Path(__file__).parent / "result" / "episodes.jsonl"
+
+
+def _episode_to_dict(record: EpisodeRecord, *, episode_idx: int, run_meta: dict) -> dict:
+    """EpisodeRecord(episode+result) -> JSON 직렬화 가능한 dict.
+
+    "1단계"(2026-07-28 결정, decisions_log.md): 커널 내부 확률(accept_prob/evidence_term 등)은
+    kernel.py의 policy() 안에서 계산되고 밖으로 안 나가서 여기 없다 -- 그 값까지 필요해지면
+    kernel.py 반환 계약을 바꾸는 "2단계" 작업. 지금은 EpisodeRecord가 이미 갖고 있는 것만 옮긴다.
+    """
+    ep, res = record.episode, record.result
+    item = ep.item
+    return {
+        **run_meta,
+        "episode_idx": episode_idx,
+        "item": {
+            "category": item.category,
+            "title": item.title,
+            "listing_price": item.listing_price,
+            "image_ref": item.image_ref,
+            "defects": [
+                {
+                    "id": d.id,
+                    "description": d.description,
+                    "defect_type": d.defect_type,
+                    "quadrant": d.quadrant,
+                    "severity": d.severity,
+                    "price_impact": d.price_impact,
+                }
+                for d in item.ground_truth_defects
+            ],
+        },
+        "episode_config": {
+            "regime": ep.regime,
+            "p_min": ep.p_min,
+            "p_max": ep.p_max,
+            "role_A": ep.role_A.name,
+            "r_A": ep.r_A,
+            "t_B": {"r": ep.t_B.r, "urgency": ep.t_B.urgency, "stance": ep.t_B.stance},  # 협상 중엔 agent에게 비공개, 사후 분석용으로만 기록
+            "opener": ep.opener,
+            "K": ep.K,
+            "harshness": ep.harshness,
+        },
+        "transcript": [
+            {
+                "turn": k,
+                "side": side,
+                "decision": action.decision.name,
+                "price": action.price,
+                "message": action.message,
+                "sentiment": action.sentiment,
+                "posture": action.posture,
+                "cited_defect_ids": list(action.cited_defect_ids or []),
+            }
+            for k, side, action in res.history
+        ],
+        "violations": [{"turn": k, "side": side, "type": vtype} for k, side, vtype in res.violations],
+        "outcome": None if res.outcome is DISAGREEMENT else res.outcome,
+    }
+
+
+def run_one_episode(rng, agent_policy, counterpart_policy, stance_weights, item, p_max) -> EpisodeRecord:
+    """episode 하나 샘플링 + 실행. main()의 배치 루프와 mapping_robustness.py 양쪽이 공유하는
+    최소 단위 -- 이 두 줄을 각 파일이 따로 복붙하면 env.py가 두 벌로 갈라졌던 사고(2026-07-28,
+    decisions_log.md의 SEVERITY_MAPPINGS/PRICE_IMPACT_MAPPINGS 축 불일치)가 재발할 수 있어서 뽑아냄."""
+    episode = sample_episode(rng, stance_weights=stance_weights, item=item, p_max=p_max)
+    result = run_episode(episode, agent_policy, counterpart_policy, rng)
+    return EpisodeRecord(episode=episode, result=result)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="GPT agent vs 규칙기반 counterpart 협상 실행 (+ 배치 metric)")
     parser.add_argument("--seed", type=int, default=1, help="랜덤 시드 (episode 배치 재현용)")
-    parser.add_argument("--model", type=str, default="gpt-4o", help="agent에 쓸 OpenAI 모델")
+    parser.add_argument(
+        "--model", type=str, default="gpt-4o",
+        help="agent에 쓸 모델 -- provider=openai면 'gpt-4o'처럼 직결 이름, provider=openrouter면 "
+             "'anthropic/claude-opus-4.6'처럼 'provider/model' 네이밍 (llm_agent.py 참고)",
+    )
+    parser.add_argument(
+        "--provider", type=str, default="openai", choices=["openai", "openrouter"],
+        help="agent LLM 호출 경로 (llm_agent.py의 make_llm_agent_policy). openrouter는 "
+             "OPENROUTER_API_KEY 필요 -- 발급 전까지는 openai(기본값)만 동작",
+    )
     parser.add_argument(
         "--fc-rate", type=str, default=None, choices=list(FC_RATES.keys()),
         help="agent를 LLM 대신 fixed-concession baseline으로 대체 (FC-1/FC-10/FC-30) -- "
@@ -52,11 +136,30 @@ def main() -> None:
         help="실 데이터셋 results.jsonl 경로 -- 지정 시 mock sample_item 대신 이 파일의 아이템을 순환",
     )
     parser.add_argument(
+        "--log-path", type=str, default=str(DEFAULT_LOG_PATH),
+        help=f"episode별 기록(transcript/violations/outcome 등)을 JSONL로 이어쓸 경로 (기본값: {DEFAULT_LOG_PATH})",
+    )
+    parser.add_argument(
+        "--no-log",
+        dest="log",
+        action="store_false",
+        default=True,
+        help="episode 기록 저장 끄기 -- 기본은 항상 저장(--log-path 참고), 정말 안 남기고 싶을 때만",
+    )
+    parser.add_argument(
         "--no-voice",
         dest="voice",
         action="store_false",
         default=True,
         help="counterpart 메시지 렌더링 끄기 -- smoke test 전용, 진짜 metric 뽑을 땐 쓰지 말 것 (모듈 docstring 참고)",
+    )
+    parser.add_argument(
+        "--no-image",
+        dest="use_image",
+        action="store_false",
+        default=True,
+        help="실 이미지가 있어도 agent에게 안 보냄 -- pulse.pptx 슬라이드6 visual 유/무 baseline용 "
+             "(llm_agent.py의 make_llm_agent_policy use_image 참고). --fc-rate는 원래 이미지를 안 보므로 무관",
     )
     args = parser.parse_args()
 
@@ -74,7 +177,7 @@ def main() -> None:
     if args.fc_rate is not None:
         agent_policy = make_fixed_concession_policy(FC_RATES[args.fc_rate])
     else:
-        agent_policy = make_llm_agent_policy(model=args.model)
+        agent_policy = make_llm_agent_policy(model=args.model, provider=args.provider, use_image=args.use_image)
     counterpart_policy = make_counterpart_policy(args.family)
     if args.voice:
         counterpart_policy = add_voice(counterpart_policy)
@@ -85,16 +188,38 @@ def main() -> None:
 
     agent_label = args.fc_rate if args.fc_rate is not None else args.model
     data_label = f"{args.data} ({len(items)} items)" if items else "mock"
-    print(f"agent={agent_label} family={args.family} episodes={args.episodes} voice={args.voice} data={data_label}")
+    print(
+        f"agent={agent_label} provider={args.provider} family={args.family} "
+        f"episodes={args.episodes} voice={args.voice} image={args.use_image} data={data_label}"
+    )
     print()
+
+    run_meta = {
+        "seed": args.seed,
+        "agent": agent_label,
+        "provider": args.provider,
+        "family": args.family,
+        "data": args.data,
+        "voice": args.voice,
+        "use_image": args.use_image,
+    }
+    log_file = None
+    if args.log:
+        log_path = Path(args.log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)  # benchmark/result/가 없으면 만듦
+        log_file = open(log_path, "a", encoding="utf-8")  # append -- 여러 번 돌린 기록이 한 파일에 누적됨
 
     records: list[EpisodeRecord] = []
     for i in range(1, args.episodes + 1):
         item = items[(i - 1) % len(items)] if items else None
         p_max = category_p_max[item.category] if item else None
-        episode = sample_episode(rng, stance_weights=stance_weights, item=item, p_max=p_max)
-        result = run_episode(episode, agent_policy, counterpart_policy, rng)
-        records.append(EpisodeRecord(episode=episode, result=result))
+        record = run_one_episode(rng, agent_policy, counterpart_policy, stance_weights, item, p_max)
+        episode, result = record.episode, record.result
+        records.append(record)
+
+        if log_file:
+            log_file.write(json.dumps(_episode_to_dict(record, episode_idx=i, run_meta=run_meta), ensure_ascii=False) + "\n")
+            log_file.flush()  # 중간에 죽어도(API 에러 등) 그때까지 판은 남도록
 
         if args.episodes == 1:
             print(f"role_A: {episode.role_A} | r_A: {episode.r_A:.2f} | K: {episode.K}")
@@ -112,6 +237,10 @@ def main() -> None:
             outcome_str = f"${result.outcome:.2f}" if isinstance(result.outcome, float) else "DISAGREEMENT"
             n_cited = sum(1 for (_, side, a) in result.history if side == "agent" and a.cited_defect_ids)
             print(f"[{i:3d}/{args.episodes}] role_A={episode.role_A.name:6s} outcome={outcome_str:>10s}  citation turns={n_cited}")
+
+    if log_file:
+        log_file.close()
+        print(f"\n(episode 기록 {args.episodes}건을 {args.log_path}에 이어씀)")
 
     if args.episodes > 1:
         print()

@@ -103,7 +103,8 @@ def crit_viol_pct(records: list[EpisodeRecord]) -> float | None:
 
 
 def _agent_citations(result: EpisodeResult) -> set[str]:
-    """이 episode에서 agent가 언급한 모든 defect id의 합집합 (여러 턴에 걸친 인용을 다 모음). C에 해당."""
+    """이 episode에서 agent가 언급한 모든 defect type의 합집합 (여러 턴에 걸친 인용을 다 모음). C에 해당.
+    2026-07-28: Defect.id가 아니라 Defect.defect_type과 비교하는 값이다 (decisions_log.md 참고)."""
     ids: set[str] = set()
     for (_, side, action) in result.history:
         if side == "agent" and action.cited_defect_ids:
@@ -119,7 +120,7 @@ def citation_precision(records: list[EpisodeRecord]) -> float | None:
         C = _agent_citations(r.result)
         if not C:
             continue
-        D = {d.id for d in r.episode.item.ground_truth_defects}
+        D = {d.defect_type for d in r.episode.item.ground_truth_defects}
         scored.append(len(C & D) / len(C))
     if not scored:
         return None
@@ -134,7 +135,7 @@ def _recall(records: list[EpisodeRecord], quadrant: str | None = None) -> tuple[
     아이템, 또는 quadrant=None인데 결함 자체가 없는) episode만 제외."""
     scored = []
     for r in records:
-        D = {d.id for d in r.episode.item.ground_truth_defects if quadrant is None or d.quadrant == quadrant}
+        D = {d.defect_type for d in r.episode.item.ground_truth_defects if quadrant is None or d.quadrant == quadrant}
         if not D:
             continue
         C = _agent_citations(r.result)
@@ -160,7 +161,7 @@ def hallucination_rate(records: list[EpisodeRecord]) -> float | None:
     flagged = 0
     for r in records:
         C = _agent_citations(r.result)
-        D = {d.id for d in r.episode.item.ground_truth_defects}
+        D = {d.defect_type for d in r.episode.item.ground_truth_defects}
         if C - D:
             flagged += 1
     return flagged / len(records)
@@ -175,7 +176,7 @@ def hallucination_rate(records: list[EpisodeRecord]) -> float | None:
 # 아니라 Calibration을 억제 방향에서 본 것. 그래서 사분면마다 새 공식을 만들지 않고, 기존
 # citation_coverage/severity_calibration을 사분면으로 슬라이스한 quadrant_detection_rate/
 # quadrant_calibration 두 함수만 추가한다.
-_QUADRANTS = ("obvious_aligned", "subtle_aligned", "obvious_misaligned", "subtle_misaligned")
+QUADRANTS = ("obvious_aligned", "subtle_aligned", "obvious_misaligned", "subtle_misaligned")
 
 
 def quadrant_detection_rate(records: list[EpisodeRecord], quadrant: str) -> tuple[float | None, int]:
@@ -266,10 +267,12 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
     return cov / (var_x * var_y) ** 0.5
 
 
-def _spearman_rho(xs: list[float], ys: list[float]) -> float | None:
+def spearman_rho(xs: list[float], ys: list[float]) -> float | None:
     """pulse.pptx가 이미 매핑-robustness 체크에 쓰던 것과 같은 지표(Spearman's rho)를
     여기서도 재사용 -- 순위 상관이라 x/y의 절대 스케일이 달라도(price_impact는 달러,
-    가격변화는 R로 정규화된 비율) 그대로 비교 가능."""
+    가격변화는 R로 정규화된 비율) 그대로 비교 가능. 공개 함수(2026-07-29) -- severity_calibration/
+    quadrant_calibration(이 파일 내부, 턴 단위 x/y쌍) 뿐 아니라 mapping_robustness.py(agent 순위
+    벡터끼리 비교)도 같은 구현을 공유한다."""
     n = len(xs)
     if n < 2:
         return None
@@ -285,16 +288,16 @@ def _severity_calibration_pairs(records: list[EpisodeRecord], quadrant: str | No
     xs: list[float] = []
     ys: list[float] = []
     for r in records:
-        defect_by_id = {d.id: d for d in r.episode.item.ground_truth_defects}
+        defect_by_type = {d.defect_type: d for d in r.episode.item.ground_truth_defects}
         R = r.episode.p_max - r.episode.p_min
         prev_price: float | None = None
         for (_, side, action) in r.result.history:
             if side != "agent" or action.decision != Decision.OFFER:
                 continue
             if action.cited_defect_ids and len(action.cited_defect_ids) == 1 and prev_price is not None:
-                cited_id = action.cited_defect_ids[0]
-                if cited_id in defect_by_id:  # 지어낸 결함이면 x(price_impact)가 없어 제외
-                    d = defect_by_id[cited_id]
+                cited_type = action.cited_defect_ids[0]
+                if cited_type in defect_by_type:  # 지어낸 결함이면 x(price_impact)가 없어 제외
+                    d = defect_by_type[cited_type]
                     if quadrant is None or d.quadrant == quadrant:
                         xs.append(d.price_impact)
                         ys.append(abs(action.price - prev_price) / R)
@@ -327,7 +330,7 @@ def severity_calibration(records: list[EpisodeRecord]) -> tuple[float | None, in
     아니다 (decisions_log.md 2026-07-26/2026-07-28 참고).
     """
     xs, ys = _severity_calibration_pairs(records)
-    return _spearman_rho(xs, ys), len(xs)
+    return spearman_rho(xs, ys), len(xs)
 
 
 def quadrant_calibration(records: list[EpisodeRecord], quadrant: str) -> tuple[float | None, int]:
@@ -335,7 +338,7 @@ def quadrant_calibration(records: list[EpisodeRecord], quadrant: str) -> tuple[f
     단일-인용 턴만으로 Spearman rho 계산. 나머지 설계 결정/주의사항은 severity_calibration과
     동일 (docstring 참고)."""
     xs, ys = _severity_calibration_pairs(records, quadrant=quadrant)
-    return _spearman_rho(xs, ys), len(xs)
+    return spearman_rho(xs, ys), len(xs)
 
 
 def subtle_misaligned_gap(records: list[EpisodeRecord]) -> tuple[float | None, int, int]:
@@ -359,7 +362,7 @@ def subtle_misaligned_gap(records: list[EpisodeRecord]) -> tuple[float | None, i
     missed: list[EpisodeRecord] = []
     for r in records:
         subtle_misaligned_ids = {
-            d.id for d in r.episode.item.ground_truth_defects if d.quadrant == "subtle_misaligned"
+            d.defect_type for d in r.episode.item.ground_truth_defects if d.quadrant == "subtle_misaligned"
         }
         if not subtle_misaligned_ids:
             continue  # 이 아이템엔 Subtle-Misaligned 결함이 아예 없음 -- 비교 대상 아님
@@ -401,7 +404,7 @@ def compute_metrics(records: list[EpisodeRecord]) -> dict[str, float | None]:
     # NEW (2026-07-26): 4개 사분면 x 2개 축(detection/calibration) 균일 리포트 -- "진짜
     # 시험하는 것"만 선택적으로 내지 않고 8개(+n 4쌍) 다 낸다. 예상 밖의 사분면에서 구멍이
     # 발견될 수 있다는 이유로 전부 리포트하기로 함 (decisions_log.md 2026-07-26 참고).
-    for q in _QUADRANTS:
+    for q in QUADRANTS:
         det_rate, det_n = quadrant_detection_rate(records, q)
         cal_rho, cal_n = quadrant_calibration(records, q)
         result[f"detection_rate_{q}"] = det_rate
