@@ -14,6 +14,15 @@ Item.ground_truth_defects는 이 파일 어디에서도 읽지 않는다 -- env.
 CraigslistBargain 실제 이미지로 "이미지+forced tool call이 같이 동작하는가"만 스모크테스트하는
 용도다 -- 실제 결함 grounding 검증(citation_precision 등)은 팀원의 합성 이미지가 와야 가능.
 
+!! 로컬 이미지 + 태그 어휘 인용 (2026-07-28 추가) !! 실 데이터(결함-합성 이미지) 도착 후 두
+가지 보강: (1) `image_ref`가 로컬 파일 경로(http(s) 아님)여도 실제 이미지로 인식해서
+base64 data URI로 전송한다. (2) agent는 ground-truth Defect.id를 절대 못 보므로(정보
+비공개 규약), 결함을 인용하려면 "무슨 문자열을 써야 하는지" 알 방법이 없었다 -- 2026-07-25
+결정(logs/2026-07-25.md)대로, id 대신 **닫힌 태그 어휘**(defect_type 7종)를 프롬프트에
+미리 공개하고 "<type>_0" 형식으로 인용하게 한다 (실 데이터는 아이템당 결함이 0~1개뿐이라
+"_0" 접미사가 항상 맞음). 이 어휘 공개는 "이 아이템에 실제로 어떤 결함이 있는지"를 새는 게
+아니라 "결함 카테고리가 이렇게 나뉜다"만 공개하는 것이라 정보 비공개 규약과 안 충돌한다.
+
 model 기본값은 gpt-4o (2026-07-11 결정): 전략적 판단이 필요한 쪽(agent)에 더 강한 모델을,
 단순 렌더링만 하는 voice.py 쪽(gpt-4o-mini)에는 가벼운 모델을 배분 -- voice.py 모듈 docstring 참고.
 
@@ -33,16 +42,22 @@ CLAUDE.md "다음 작업"의 "평가 대상 agent 리스트 제출"과 연결) -
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import random
+from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from env import Action, Decision, Episode, Role
+from env import Action, Decision, Episode, PRICE_IMPACT_MAPPINGS, Role
 
 load_dotenv()  # .env의 OPENAI_API_KEY(및 있다면 OPENROUTER_API_KEY)를 환경변수로 로드
+
+# 닫힌 태그 어휘 (2026-07-28, logs/2026-07-25.md 결정) -- PRICE_IMPACT_MAPPINGS의 키를 그대로
+# 재사용해서 env.py와 어휘가 갈라지지 않게 한다 (어느 mapping preset이든 키는 동일 7종).
+_DEFECT_TAG_VOCAB = sorted(PRICE_IMPACT_MAPPINGS["B_moderate"].keys())
 
 _NEGOTIATE_TOOL = {
     "type": "function",
@@ -68,7 +83,9 @@ _NEGOTIATE_TOOL = {
                 "cited_defect_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "IDs of the defects actually mentioned in this message (will always be empty for now since there are no images yet). Empty array if none.",
+                    "description": "IDs of defects you actually observed in the photo and are citing this "
+                    "message, formatted as '<type>_0' (e.g. 'scratch_0') using the defect type list given "
+                    "in the prompt. Empty array if you don't cite any defect this turn.",
                 },
             },
             "required": ["decision", "price", "message", "cited_defect_ids"],
@@ -100,10 +117,33 @@ def format_history(history: list[tuple[int, str, Action]], side: str) -> str:
 
 
 def _has_real_image(item) -> bool:
-    """item.image_ref가 mock placeholder("placeholder://...")가 아니라 실제 http(s) URL인지.
-    env.py의 sample_item은 항상 placeholder를 쓰므로, 이게 True인 경우는 지금은 오직
-    CraigslistBargain 스모크테스트(craigslist_smoke.py)로 만든 Item뿐이다."""
-    return item.image_ref.startswith("http://") or item.image_ref.startswith("https://")
+    """item.image_ref가 mock placeholder("placeholder://...")가 아니라 실제 이미지인지 --
+    http(s) URL이거나(craigslist_smoke.py 경로), 실제 존재하는 로컬 파일 경로면(data_loader.py
+    경로, 2026-07-28 추가) True. env.py의 sample_item은 항상 placeholder를 쓰므로 mock
+    경로는 계속 False."""
+    if item.image_ref.startswith("http://") or item.image_ref.startswith("https://"):
+        return True
+    return os.path.isfile(item.image_ref)
+
+
+def _sniff_image_mime(data: bytes) -> str:
+    """확장자 대신 매직 바이트로 실제 이미지 포맷을 판별한다 -- 실 데이터의 synth/*.jpg는
+    파일명은 .jpg지만 실제로는 PNG(나노바나나 결함합성 API 출력이 항상 PNG라 확인됨,
+    2026-07-28), originals/*.jpg는 실제 JPEG라 확장자만으로는 못 믿는다."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    return "jpeg"  # JPEG(\xff\xd8\xff)가 기본, 이 데이터셋의 나머지 전부
+
+
+def _image_url(item) -> str:
+    """item.image_ref -> OpenAI 비전 API의 image_url 값. http(s)는 그대로 URL로, 로컬 파일은
+    base64 data URI로 인코딩한다 (2026-07-28 추가 -- data_loader.py가 넘기는 image_ref는
+    항상 로컬 절대경로). MIME 타입은 확장자가 아니라 _sniff_image_mime()으로 판별."""
+    if item.image_ref.startswith("http://") or item.image_ref.startswith("https://"):
+        return item.image_ref
+    raw = Path(item.image_ref).read_bytes()
+    data = base64.b64encode(raw).decode("ascii")
+    return f"data:image/{_sniff_image_mime(raw)};base64,{data}"
 
 
 def _build_prompt(episode: Episode, history: list[tuple[int, str, Action]], side: str) -> tuple[str, str]:
@@ -116,7 +156,11 @@ def _build_prompt(episode: Episode, history: list[tuple[int, str, Action]], side
         f"You are the {role.name}. You must call the negotiate_action tool exactly once per turn to record "
         "your move -- OFFER a price, ACCEPT the counterpart's last offer, or REJECT and walk away."
     )
-    photo_line = "\nA photo of the item is attached above -- look it over before deciding your move." if _has_real_image(item) else ""
+    photo_line = (
+        "\nA photo of the item is attached above -- look it over before deciding your move. "
+        "If you notice a defect, cite it in cited_defect_ids as '<type>_0' where <type> is one of: "
+        f"{', '.join(_DEFECT_TAG_VOCAB)}."
+    ) if _has_real_image(item) else ""
     user = f"""Item for sale:
 - Category: {item.category}
 - Title: {item.title}
@@ -143,7 +187,7 @@ def _user_content(episode: Episode, user_text: str) -> str | list[dict]:
         return user_text
     return [
         {"type": "text", "text": user_text},
-        {"type": "image_url", "image_url": {"url": item.image_ref}},
+        {"type": "image_url", "image_url": {"url": _image_url(item)}},
     ]
 
 

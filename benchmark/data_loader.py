@@ -1,13 +1,15 @@
-"""data_spec.md 스펙(JSON 배열 또는 JSONL)을 읽어 env.py의 Item/Defect로 변환.
+"""results.jsonl(JSON 배열 또는 JSONL)을 읽어 env.py의 Item/Defect로 변환.
 
-benchmark/CLAUDE.md 2026-07-12 항목에서 미구현으로 남겨뒀던 로더 -- 팀원이 data_spec.md
-포맷으로 결함-합성 이미지 메타데이터를 넘겨주면, 이 파일로 실제 Item 리스트를 만든다.
+실 데이터 레코드 형식:
+- Item: item_id/category/title/description/listing_price/image_ref/image_ref_original/defects
+- Defect(defects 배열 원소, 0~1개): id/description/defect_type/visibility/alignment/severity
 
-data_spec.md의 item_id/image_ref_original 필드는 env.py의 Item dataclass에 대응하는
-슬롯이 없다 (지금 아무 코드도 이 두 값을 읽지 않음) -- 로더가 파싱은 하되 Item에는 안
-옮긴다. data_spec.md 자체가 "나중에 필요해질 가능성 높음"이라고 명시했으니, 실제로
-필요해지면 Item에 필드를 추가하고 여기서 이어붙이면 된다 (지금 미리 추가하지 않는 이유:
-아무도 안 쓰는 필드를 미리 만들지 않는다는 프로젝트 원칙).
+여기서 하는 변환:
+- `visibility`+`alignment` -> `quadrant` 문자열 (예: "obvious"+"aligned" -> "obvious_aligned")
+- `defect_type`+`listing_price`로 `price_impact_for()` 호출 -> `price_impact` 계산
+  (레코드엔 price_impact이 없음, defect_type 기반으로 여기서 계산)
+- `severity`는 그대로 보관하되 계산엔 안 씀 (env.py 참고)
+- `item_id`/`image_ref_original`은 Item에 대응 필드가 없어 파싱만 하고 버림
 """
 
 from __future__ import annotations
@@ -15,44 +17,50 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from env import Defect, Item
+from env import Defect, Item, price_impact_for
 
 
-def _defect_from_dict(d: dict) -> Defect:
+def _defect_from_dict(d: dict, listing_price: float, mapping: dict[str, float] | None) -> Defect:
+    quadrant = f"{d['visibility']}_{d['alignment']}"
     return Defect(
         id=d["id"],
         description=d["description"],
-        price_impact=float(d["price_impact"]),
-        # quadrant/salience: data_spec.md 스펙에 아직 없는 필드 -- 팀원 데이터에
-        # 나중에 추가되면 여기서 d.get(...)으로 채우면 됨. 지금은 항상 기본값(None).
+        price_impact=price_impact_for(listing_price, d["defect_type"], mapping),
+        quadrant=quadrant,
+        severity=d.get("severity"),  # 정보 보관용, 계산엔 미사용
+        defect_type=d["defect_type"],
     )
 
 
-def _item_from_dict(d: dict) -> Item:
-    defects = tuple(_defect_from_dict(defect) for defect in d.get("defects", []))
+def _item_from_dict(d: dict, base_dir: Path, mapping: dict[str, float] | None) -> Item:
+    listing_price = float(d["listing_price"])
+    defects = tuple(
+        _defect_from_dict(defect, listing_price, mapping) for defect in d.get("defects", [])
+    )
     return Item(
         category=d["category"],
         title=d["title"],
         description=d["description"],
-        listing_price=float(d["listing_price"]),
-        image_ref=d["image_ref"],
+        listing_price=listing_price,
+        image_ref=str((base_dir / d["image_ref"]).resolve()),  # jsonl 기준 상대경로 -> 절대경로
         ground_truth_defects=defects,
-        # item_id/image_ref_original: 위 모듈 docstring 참고, 지금은 파싱만 하고 버림.
+        # item_id/image_ref_original: Item에 대응 필드 없음, 파싱만 하고 버림
     )
 
 
-def load_items(path: str | Path) -> list[Item]:
-    """data_spec.md 스펙 파일 하나(JSON 배열 또는 JSONL)를 읽어 Item 리스트로 변환.
+def load_items(path: str | Path, mapping: dict[str, float] | None = None) -> list[Item]:
+    """JSON 배열 또는 JSONL 파일을 읽어 Item 리스트로 변환.
 
-    형식은 자동 감지: 파일의 첫 non-whitespace 문자가 '['면 JSON 배열 전체를 한 번에
-    파싱하고, 아니면 한 줄에 객체 하나씩(JSONL)이라고 보고 줄 단위로 파싱한다
-    (data_spec.md "여러 개면 JSON 배열로 묶거나, 한 줄에 객체 하나씩(JSONL)으로 주시면
-    됩니다" 규칙 그대로).
+    형식 자동 감지: 첫 non-whitespace 문자가 '['면 배열, 아니면 줄 단위 JSONL.
+    mapping: env.py의 PRICE_IMPACT_MAPPINGS 중 하나. None이면 기본값(B_moderate) 사용 --
+    매핑 로버스트니스 실험에서 mapping만 바꿔가며 재호출.
     """
-    text = Path(path).read_text(encoding="utf-8")
+    path = Path(path)
+    base_dir = path.parent
+    text = path.read_text(encoding="utf-8")
     stripped = text.lstrip()
     if stripped.startswith("["):
         records = json.loads(text)
     else:
         records = [json.loads(line) for line in text.splitlines() if line.strip()]
-    return [_item_from_dict(r) for r in records]
+    return [_item_from_dict(r, base_dir, mapping) for r in records]

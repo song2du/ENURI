@@ -321,10 +321,10 @@ def severity_calibration(records: list[EpisodeRecord]) -> tuple[float | None, in
     반환값 (rho, n) -- n(표본turn 수)을 항상 같이 반환해 오독 방지 (subtle_misaligned_gap과
     같은 이유).
 
-    !! 주의 (2026-07-26) !! 여기 비교 대상인 price_impact는 절대적 진실이 아니라
-    env.py의 SEVERITY_MAPPINGS에서 우리가 고른 매핑값이다 -- "calibration이 잘 됐다"는
-    결과는 "그 매핑을 기준으로" 잘 됐다는 뜻이지, 매핑 선택과 무관한 절대적 결론이
-    아니다 (decisions_log.md 2026-07-26 참고).
+    !! 주의 (2026-07-26, 2026-07-28 갱신) !! 여기 비교 대상인 price_impact는 절대적 진실이
+    아니라 env.py의 PRICE_IMPACT_MAPPINGS에서 우리가 고른 매핑값이다 -- "calibration이 잘
+    됐다"는 결과는 "그 매핑을 기준으로" 잘 됐다는 뜻이지, 매핑 선택과 무관한 절대적 결론이
+    아니다 (decisions_log.md 2026-07-26/2026-07-28 참고).
     """
     xs, ys = _severity_calibration_pairs(records)
     return _spearman_rho(xs, ys), len(xs)

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import random
 
+from data_loader import load_items
 from env import sample_episode, run_episode
 from fixed_concession_agent import FC_RATES, make_fixed_concession_policy
 from kernel import FAMILIES, make_counterpart_policy, stance_prior_for
@@ -47,6 +48,10 @@ def main() -> None:
     )
     parser.add_argument("--episodes", type=int, default=1, help="몇 판 돌릴지 (1이면 transcript, 2 이상이면 metric 집계)")
     parser.add_argument(
+        "--data", type=str, default=None,
+        help="실 데이터셋 results.jsonl 경로 -- 지정 시 mock sample_item 대신 이 파일의 아이템을 순환",
+    )
+    parser.add_argument(
         "--no-voice",
         dest="voice",
         action="store_false",
@@ -56,6 +61,16 @@ def main() -> None:
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
+    items = None
+    category_p_max: dict[str, float] = {}
+    if args.data is not None:
+        items = load_items(args.data)
+        rng.shuffle(items)  # 파일이 카테고리별로 정렬돼 있어(bike가 먼저 등) 순서대로 뽑으면 편향됨
+        # p_max는 아이템 자기 listing_price보다 넓게(카테고리 내 최댓값) 잡는다 -- env.py
+        # sample_episode의 p_max 기본값(item.listing_price)은 단독 호출용 안전장치일 뿐,
+        # 여기서는 전체 데이터셋을 알고 있으니 카테고리 경계를 직접 계산해서 넘겨준다.
+        for it in items:
+            category_p_max[it.category] = max(category_p_max.get(it.category, 0.0), it.listing_price)
     if args.fc_rate is not None:
         agent_policy = make_fixed_concession_policy(FC_RATES[args.fc_rate])
     else:
@@ -69,12 +84,15 @@ def main() -> None:
     stance_weights = stance_prior_for(args.family)
 
     agent_label = args.fc_rate if args.fc_rate is not None else args.model
-    print(f"agent={agent_label} family={args.family} episodes={args.episodes} voice={args.voice}")
+    data_label = f"{args.data} ({len(items)} items)" if items else "mock"
+    print(f"agent={agent_label} family={args.family} episodes={args.episodes} voice={args.voice} data={data_label}")
     print()
 
     records: list[EpisodeRecord] = []
     for i in range(1, args.episodes + 1):
-        episode = sample_episode(rng, stance_weights=stance_weights)
+        item = items[(i - 1) % len(items)] if items else None
+        p_max = category_p_max[item.category] if item else None
+        episode = sample_episode(rng, stance_weights=stance_weights, item=item, p_max=p_max)
         result = run_episode(episode, agent_policy, counterpart_policy, rng)
         records.append(EpisodeRecord(episode=episode, result=result))
 
