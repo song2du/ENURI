@@ -118,21 +118,32 @@ PHI0, PHI_DELTA, PHI_T = -4.5, 30.0, 1.5
 # 전혀 영향을 못 줬음 -- subtle_misaligned_gap 같은 "사후 분석 라벨"로만 쓰이고 시뮬레이터
 # 자체는 quadrant를 무시했던 게 실제 설계 갭이었음 (교수님 코멘트로 지적됨).
 #
-# 값 자체는 EVIDENCE_BONUS=2.0이 그랬던 것처럼 프로토타입 단계 임의값 -- 튜닝 필요. 다만
-# 방향성은 의도적으로 설계함:
+# 방향성(순서/비율)은 의도적으로 설계함:
 # - obvious_aligned: 쉽게 보이고 실제로도 심각 -- 인용해도 "누구나 할 수 있는 것"이라 기본 보너스
-# - subtle_aligned: 찾기 어려운데 실제로 심각 -- 순수 detection 성공에 큰 보너스
+# - subtle_aligned: 찾기 어려운데 실제로 심각 -- 순수 detection 성공에 큰 보너스 (기본의 3배)
 # - obvious_misaligned: 눈에 띄지만 실제 영향 적음 -- 그냥 언급만으론 counterpart를 별로
 #   설득 못 해야 함(과잉반응을 경제적으로 보상하면 안 됨) -- 가장 작은 보너스
 # - subtle_misaligned: 찾기도 어렵고 실제로 심각(가장 어려운 사분면) -- detection+grounding
 #   둘 다 성공한 것이므로 최대 보너스
+#
+# 크기 재조정 (2026-07-29): 최초 값(1.0/3.0/0.5/4.0, 비율은 그대로)은 accept_prob의 다른
+# 항들과 비교해 너무 컸다 -- delta_bar가 ZOPA 폭이 아니라 R=p_max-p_min(listing_price
+# 전체, 종종 그보다 더 큼, env.py 2026-07-28 결정)으로 정규화되기 때문에, ZOPA 안에서 가장
+# 후한 offer라도 delta_bar가 실제로는 ~0.15~0.2 수준밖에 안 됨 -- ALPHA(6.0)를 곱해도
+# ALPHA*delta_bar의 현실적 상한이 ~1.0~1.5 정도다. 그런데 QUADRANT_BONUS는 최대 4.0까지
+# 갔었으니, "가격이 결함 가치를 실제로 반영했는가"라는 신호를 결함 인용 여부 하나가 통째로
+# 압도해버렸음(예: 50% 근처 accept_prob이 subtle_misaligned 인용 한 번으로 ~98%까지 뜀,
+# 가격을 실제로 얼마나 깎았는지와 무관하게). 비율(1:3:0.5:4)은 유지하되 최댓값을
+# ALPHA*delta_bar의 현실적 상한 근처(~1.2)로 낮춰서, "결함을 근거로 든다"가 가격 공정성
+# 신호를 보조하는 정도이지 대체하지 않도록 압축했다.
 QUADRANT_BONUS = {
-    "obvious_aligned": 1.0,
-    "subtle_aligned": 3.0,
-    "obvious_misaligned": 0.5,
-    "subtle_misaligned": 4.0,
+    "obvious_aligned": 0.3,
+    "subtle_aligned": 0.9,
+    "obvious_misaligned": 0.15,
+    "subtle_misaligned": 1.2,
 }
-_DEFAULT_BONUS = 2.0  # quadrant 미지정(None, 예: 아직 태깅 안 된 결함)일 때의 폴백 -- 기존 EVIDENCE_BONUS와 동일값 유지
+_DEFAULT_BONUS = 0.6  # quadrant 미지정(None, 예: 아직 태깅 안 된 결함) 폴백 -- 위 재조정과
+# 같은 비율로 축소(2.0 -> 0.6), obvious_aligned와 subtle_aligned 사이 중간값
 
 
 def evidence_term_for(agent_action: Action | None, item: Item, role_A: Role) -> float:
@@ -161,8 +172,12 @@ def evidence_term_for(agent_action: Action | None, item: Item, role_A: Role) -> 
     """
     if agent_action is None or not agent_action.cited_defect_ids:
         return 0.0
-    real_defects_by_id = {d.id: d for d in item.ground_truth_defects}
-    cited_real = [real_defects_by_id[cid] for cid in agent_action.cited_defect_ids if cid in real_defects_by_id]
+    # 2026-07-28: Defect.id("scratch_0") 대신 Defect.defect_type("scratch")로 매칭 --
+    # 아이템당 결함이 0~1개뿐이라 "_0" 접미사는 정보가 없는 상수라서, agent가 그 접미사를
+    # 빼먹어도(형식 실수) "실제로는 맞게 인용한 것"으로 잡히도록 llm_agent.py/metrics.py와
+    # 함께 defect_type 축으로 통일 (decisions_log.md 참고).
+    real_defects_by_type = {d.defect_type: d for d in item.ground_truth_defects}
+    cited_real = [real_defects_by_type[cid] for cid in agent_action.cited_defect_ids if cid in real_defects_by_type]
     if not cited_real:
         return 0.0
     bonus = max(QUADRANT_BONUS.get(d.quadrant, _DEFAULT_BONUS) for d in cited_real)

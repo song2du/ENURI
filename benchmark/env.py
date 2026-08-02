@@ -50,6 +50,8 @@ class Defect:
     price_impact: float  # 이 결함 하나가 "공정가"에서 깎아야 하는 금액
     salience: float | None = None  # 0~1, 육안으로 얼마나 두드러지는지. !! 2026-07-11 결정: 8주 학술제 스코프에서 제외 !! -- 제대로 측정하려면 연구자 본인이 아닌 3인 이상 독립 코더가 결함 위치를 모르는 채로(블라인드) 각자 판단하고 ICC(intraclass correlation)로 신뢰도를 확인해야 하는데, 이건 이번 스코프 밖 future work다. 지금은 항상 None -- 어떤 코드도 이 필드를 실제로 참조하지 않는다 (benchmark/CLAUDE.md, benchmark/data_spec.md 참고).
     quadrant: str | None = None  # NEW (2026-07-23): "obvious_aligned"|"subtle_aligned"|"obvious_misaligned"|"subtle_misaligned" -- pulse.pptx 슬라이드2/4의 가시성x정합성 4분면 태그. salience와 다르게 이건 "측정해서 검증해야 하는 연속값"이 아니라 "결함을 합성할 때 제작자가 의도적으로 부여하는 설계 레이블"이다 (counterpart의 FAMILIES가 커널 설계 레이블인 것과 같은 성격) -- 그래서 salience 스코프아웃 결정과 충돌하지 않는다. metrics.py의 subtle_misaligned_gap이 이 필드로 "안 보이지만 가치 영향 큰" 결함을 식별한다. 실제 이미지 파이프라인 연동 전까지는 _DEFECT_IDENTITIES(2026-07-26, 구 _DEFECT_CATALOG)의 mock 태그만 존재 -- 팀원의 실제 분류로 교체 예정.
+    severity: str | None = None  # NEW (2026-07-28, 실 데이터 도착 후 추가): "mild"|"moderate"|"severe", 실 데이터가 갖고 있는 필드라 파싱은 하되 price_impact 계산엔 안 쓴다 -- 아래 PRICE_IMPACT_MAPPINGS 주석의 2026-07-28 경위 참고 (한때 severity 축으로 가격을 계산하려 했다가, pulse.pptx 원본 슬라이드 확인 후 defect_type 축이 맞다는 게 드러나 되돌림). 순수 정보 보관용 -- quadrant(visibility x alignment)와 100% 상관되는 값이라(실 데이터 270개 결함 전수 검증, 예외 0건) 나중에 참고할 순 있어도 지금 아무 계산도 이 필드를 읽지 않는다.
+    defect_type: str | None = None  # NEW (2026-07-28): "scratch"/"dent"/"rust"/"crack"/"tear"/"stain"/"missing_part" 결함 종류 태그. price_impact를 실제로 계산하는 입력이 이 필드다 (아래 PRICE_IMPACT_MAPPINGS 참고) -- pulse.pptx "구체적 절차" 슬라이드 원표의 열 이름이 문자 그대로 결함 종류(스크래치/화면균열/부품누락)였다.
 
 
 @dataclass(frozen=True)
@@ -174,41 +176,71 @@ def sample_urgency(rng: random.Random, shifted: bool, shift: float, alpha: float
 # (benchmark/CLAUDE.md 2026-07-26 논의 참고).
 _DEFECT_IDENTITIES = [
     # (kind, description, quadrant) -- pulse.pptx 슬라이드3의 매핑 표(스크래치/화면균열/
-    # 부품누락, 2026-07-26)에 hairline_crack/stain 2종을 추가해 4개 사분면을 전부 커버한다
-    # (2026-07-26 결정, "quadrant 기반 utilization 지표"(quadrant_detection_rate/
-    # quadrant_calibration, metrics.py) 설계 중 발견 -- 3종만으로는 obvious_misaligned/
-    # subtle_aligned 사분면 결함이 생성 자체가 안 돼서 그 두 지표가 항상 None으로 죽는
-    # 문제가 있었음, decisions_log.md 참고).
-    # quadrant: scratch/screen_crack/missing_part는 기존 배치 그대로 유지 (근거는 위
-    # 2026-07-26 최초 결정과 동일). hairline_crack/stain은 슬라이드2 원문의 예시를 그대로
-    # 옮김: subtle_aligned 예시("모서리 미세 균열처럼 자세히 봐야 보이지만, 실제로 값을
-    # 떨어뜨림"), obvious_misaligned 예시("눈에 확 띄지만 실제 가치엔 별 영향 없는 하자
-    # -- 예: 쉽게 닦이는 얼룩").
+    # 부품누락, 2026-07-26)에 stain/rust 2종을 추가해 4개 사분면을 전부 커버한다 (2026-07-26
+    # 결정, "quadrant 기반 utilization 지표"(quadrant_detection_rate/quadrant_calibration,
+    # metrics.py) 설계 중 발견 -- 3종만으로는 obvious_misaligned/subtle_aligned 사분면
+    # 결함이 생성 자체가 안 돼서 그 두 지표가 항상 None으로 죽는 문제가 있었음,
+    # decisions_log.md 참고).
+    # kind 문자열 (2026-07-28 수정): mock 전용 이름(screen_crack/hairline_crack)을 쓰지
+    # 않고 **실 데이터의 defect_type 어휘 그대로** 쓴다 -- agent가 인용한 결함을 나중에
+    # defect_type 단어 매칭으로 대조할 일이 생길 때 mock/실 데이터 어휘가 갈라져 있으면
+    # 안 되므로. screen_crack -> crack, hairline_crack -> rust로 교체(quadrant 배치는
+    # 그대로 유지: obvious_aligned 두 번째 슬롯, subtle_aligned 슬롯).
+    # quadrant: scratch/crack/missing_part는 pulse.pptx 표 그대로. rust/stain은 슬라이드2
+    # 원문 예시를 그대로 옮김: subtle_aligned 예시("모서리에 녹이 슬기 시작해서 자세히
+    # 봐야 보이지만, 실제로 값을 떨어뜨림"), obvious_misaligned 예시("눈에 확 띄지만 실제
+    # 가치엔 별 영향 없는 하자 -- 예: 쉽게 닦이는 얼룩").
     ("scratch", "Scratch on the surface", "obvious_aligned"),
-    ("screen_crack", "Crack on the screen", "obvious_aligned"),
-    ("hairline_crack", "Hairline crack in the corner", "subtle_aligned"),
+    ("crack", "Crack on the surface", "obvious_aligned"),
+    ("rust", "Rust starting to form in a hard-to-notice spot", "subtle_aligned"),
     ("stain", "Stain that wipes off easily", "obvious_misaligned"),
     ("missing_part", "Missing accessory/part", "subtle_misaligned"),
 ]
 
-# 결함->가치 매핑 로버스트니스 실험용 프리셋 (2026-07-26). scratch/screen_crack/
-# missing_part 3종의 값은 pulse.pptx 슬라이드3 표 그대로. hairline_crack/stain 2종은
-# 슬라이드3에 값이 없어서 우리가 임의로 채운 것 -- 방향성만 의도적으로 맞춤:
-# hairline_crack(subtle_aligned)은 "진짜 심각한" 축이라 scratch보다 크고 screen_crack과
-# 비슷한 스케일로, stain(obvious_misaligned)은 "눈에 띄어도 사소한" 축이라 5종 중 가장
-# 작은 값으로 잡음(과잉반응 지표가 유의미하려면 진짜로 작은 진실값이어야 함). 각 값은
-# listing_price 대비 퍼센트(양수, price_impact = pct * listing_price로 계산) -- 매핑마다
-# "같은 결함이라도 얼마나 심각하게 볼 것인가"를 다르게 가정한다. 로버스트니스 실험은 이
-# 4개 매핑으로 전체 벤치마크를 각각 돌려서(같은 seed) agent 순위가 매핑 선택에 안
-# 흔들리는지(Spearman's rho) 확인하는 것이 목적 -- 아직 그 실험 오케스트레이션 자체는
-# 미구현, 지금은 매핑을 갈아끼울 수 있는 인프라만 준비해두는 단계 (실제 이미지+VLM 데이터가
-# 와야 진짜 agent 순위 실험이 의미가 생김 -- benchmark/CLAUDE.md 2026-07-26 논의 참고).
-SEVERITY_MAPPINGS: dict[str, dict[str, float]] = {
-    "A_conservative": {"scratch": 0.05, "screen_crack": 0.15, "hairline_crack": 0.12, "stain": 0.02, "missing_part": 0.20},
-    "B_mid":          {"scratch": 0.10, "screen_crack": 0.25, "hairline_crack": 0.20, "stain": 0.04, "missing_part": 0.35},
-    "C_aggressive":   {"scratch": 0.15, "screen_crack": 0.40, "hairline_crack": 0.32, "stain": 0.06, "missing_part": 0.50},
-    "D_nonlinear":    {"scratch": 0.08, "screen_crack": 0.30, "hairline_crack": 0.24, "stain": 0.03, "missing_part": 0.45},
+# 결함->가치 매핑 로버스트니스 실험용 프리셋 (2026-07-26 최초 작성, 2026-07-28 두 번 수정
+# -- 아래 경위).
+#
+# !! 2026-07-28 경위 (두 번 뒤집힌 축) !! ① 최초(2026-07-26)엔 defect_type(kind) 축으로
+# 올바르게 짰었다. ② 실 데이터 도착 후 팀원의 실제 생성 코드(summary_v1_0726.md)를 보고,
+# "pulse.pdf 표 열을 severity(mild/moderate/severe) 예시로 재해석해서 구현했다"는 팀원
+# 문서 설명을 그대로 믿고 축을 severity로 바꿨다. ③ 그런데 사용자가 pulse.pptx 원본
+# 슬라이드("구체적 절차") 스크린샷을 직접 확인시켜줌 -- 표의 열 이름이 문자 그대로
+# "스크래치/화면균열/부품누락"(defect_type)이었다. 즉 ①이 원래 맞았고, 팀원의 severity
+# 재해석은 팀원 본인 생성 파이프라인만의 임의 변형이었음(교수님 원본과 다름). 그래서
+# defect_type 축으로 다시 되돌린다 -- Defect.severity 필드는 그대로 남기되(실 데이터가
+# 갖고 있는 정보라 보관 가치는 있음) price_impact 계산엔 이제 안 쓴다.
+#
+# 실 데이터의 defect_type 카탈로그는 7종(scratch/dent/rust/crack/stain/tear/missing_part)
+# 인데 pulse.pptx 표는 3종(scratch/crack/missing_part -- "화면균열"은 실 데이터에서 전부
+# electronics 카테고리에만 나오는 "crack"과 사실상 동일 개념으로 판단)만 커버한다.
+# 나머지 4종(dent/rust/stain/tear, 결함 270개 중 140개로 절반 이상)은 교수님이 준 숫자가
+# 없어서, 2026-07-28 사용자 결정("매핑을 늘리면 되잖아")에 따라 이미 있는 3개 퍼센트
+# 티어에 유추 배정한다 -- **새 숫자를 지어낸 게 아니라 교수님이 승인한 퍼센트 3개를 더
+# 많은 키에 재사용**하는 것: stain은 scratch와 같은 "외관/경미" 티어(둘 다 표면적이고
+# 보통 큰 구조적 문제는 아님), dent/rust/tear는 crack과 같은 "중간/구조적" 티어(외관보다는
+# 심하지만 부품 손실만큼 심각하진 않음)로 묶었다. missing_part 티어(가장 심각)에 준하는
+# 결함 종류는 실 데이터에 따로 없어서 그대로 둠. 임의성은 "어느 티어에 배정하느냐"에만
+# 있고 퍼센트 숫자 자체는 전부 pulse.pptx 원표 그대로다.
+# 키는 딱 실 데이터의 defect_type 어휘 7종(scratch/dent/rust/crack/stain/tear/
+# missing_part)만 쓴다 -- mock 전용 별칭(구 screen_crack/hairline_crack)을 안 두는 이유는
+# 위 _DEFECT_IDENTITIES 주석 참고(2026-07-28, 사용자 결정): mock도 이제 이 7종 어휘를
+# 그대로 쓰도록 바꿨으므로 별칭이 필요 없다.
+PRICE_IMPACT_MAPPINGS: dict[str, dict[str, float]] = {
+    "A_conservative": {"scratch": 0.05, "stain": 0.05, "crack": 0.15, "dent": 0.15, "rust": 0.15, "tear": 0.15, "missing_part": 0.20},
+    "B_moderate":     {"scratch": 0.10, "stain": 0.10, "crack": 0.25, "dent": 0.25, "rust": 0.25, "tear": 0.25, "missing_part": 0.35},
+    "C_aggressive":   {"scratch": 0.15, "stain": 0.15, "crack": 0.40, "dent": 0.40, "rust": 0.40, "tear": 0.40, "missing_part": 0.50},
+    "D_nonlinear":    {"scratch": 0.08, "stain": 0.08, "crack": 0.30, "dent": 0.30, "rust": 0.30, "tear": 0.30, "missing_part": 0.45},
 }
+
+
+def price_impact_for(listing_price: float, defect_type: str, mapping: dict[str, float] | None = None) -> float:
+    """defect_type("scratch"/"dent"/"rust"/"crack"/"stain"/"tear"/"missing_part") -> 실제
+    할인 금액. mapping=None이면 PRICE_IMPACT_MAPPINGS["B_moderate"](2026-07-26 결정 근거와
+    동일: 4개 후보 중 "중간"이라는 최소한의 근거가 있는 기본값). data_loader.py와
+    sample_item() 양쪽에서 이 함수를 공유해서 실 데이터 경로와 mock 경로가 같은 계산을
+    쓰도록 한다."""
+    mapping = mapping if mapping is not None else PRICE_IMPACT_MAPPINGS["B_moderate"]
+    return mapping[defect_type] * listing_price
 
 
 def sample_item(
@@ -228,22 +260,27 @@ def sample_item(
     num_defects는 고정값으로 단순화 (원래는 0~N개로 다양화해야 하나, 오늘은
     "결함이 최소 1개는 있는 정상 케이스"부터 배관을 검증하는 게 우선).
 
-    mapping: 결함 kind -> listing_price 대비 퍼센트. None이면 SEVERITY_MAPPINGS["B_mid"]
-    (2026-07-26 결정 -- 4개 후보 중 "중간"이라는 최소한의 근거가 있어 이전의 임의
-    절대금액보다 나은 기본값). 매핑 로버스트니스 실험에서는 같은 rng 시퀀스에서 mapping
-    인자만 바꿔가며 여러 번 호출한다 -- rng.sample이 _DEFECT_IDENTITIES의 개수/순서에만
-    의존하므로 "어떤 결함이 뽑히는지"는 매핑이 달라도 동일하게 유지되고 price_impact
-    숫자만 달라진다 (위 _DEFECT_IDENTITIES/SEVERITY_MAPPINGS 주석 참고).
+    mapping: defect_type("scratch"/"dent"/"rust"/"crack"/"stain"/"tear"/"missing_part") ->
+    listing_price 대비 퍼센트. None이면 PRICE_IMPACT_MAPPINGS["B_moderate"] (2026-07-26
+    결정, 2026-07-28 재확인 -- 위 PRICE_IMPACT_MAPPINGS 주석 참고). data_loader.py가 실
+    데이터의 defect_type 필드를 읽어 price_impact_for()에 넘기는 것과 정확히 같은 계산
+    경로를 타므로, mock 경로와 실 데이터 경로가 서로 다른 축으로 갈라지지 않는다. 매핑
+    로버스트니스 실험에서는 같은 rng 시퀀스에서 mapping 인자만 바꿔가며 여러 번 호출한다
+    -- rng.sample이 _DEFECT_IDENTITIES의 개수/순서에만 의존하므로 "어떤 결함이 뽑히는지"는
+    매핑이 달라도 동일하게 유지되고 price_impact 숫자만 달라진다 (위 _DEFECT_IDENTITIES/
+    PRICE_IMPACT_MAPPINGS 주석 참고).
     """
-    mapping = mapping if mapping is not None else SEVERITY_MAPPINGS["B_mid"]
     picks = rng.sample(_DEFECT_IDENTITIES, k=min(num_defects, len(_DEFECT_IDENTITIES)))
     defects = tuple(
         Defect(
             id=f"{kind}_{i}",
             description=desc,
-            price_impact=mapping[kind] * listing_price,
+            price_impact=price_impact_for(listing_price, kind, mapping),
             quadrant=quadrant,
-            # salience는 지정 안 함 -> 기본값 None (스코프 밖, Defect.salience 필드 주석 참고)
+            defect_type=kind,
+            # severity는 지정 안 함 -> 기본값 None (mock 경로엔 실제 severity 라벨이 없음,
+            # 위 Defect.severity 필드 주석 참고). salience도 지정 안 함 -> 기본값 None
+            # (스코프 밖, Defect.salience 필드 주석 참고)
         )
         for i, (kind, desc, quadrant) in enumerate(picks)
     )
@@ -266,20 +303,25 @@ def fair_price(item: Item) -> float:
     return item.listing_price - sum(d.price_impact for d in item.ground_truth_defects)
 
 
+REGIMES: tuple[str, ...] = ("overlap", "urgency_shift", "no_deal")
+
+
 def sample_episode(
     rng: random.Random,
     p_min: float = 0.0,
-    p_max: float = 100.0,
+    p_max: float | None = None,
     K: int = 10,
-    regimes: tuple[str, ...] = ("overlap", "urgency_shift", "no_deal"),
+    regimes: tuple[str, ...] = REGIMES,
     regime_weights: tuple[float, ...] | None = None,
-    z_range: tuple[float, float] = (5.0, 40.0),
-    q_range: tuple[float, float] = (5.0, 40.0),
+    z_range: tuple[float, float] | None = None,
+    q_range: tuple[float, float] | None = None,
     urgency_shift: float = 0.2,
     stance_prior: tuple[str, ...] = ("conciliatory", "neutral", "aggressive"),
     stance_weights: tuple[float, float, float] | None = None,
     harshness_range: tuple[float, float] = (0.20, 0.80),
     item: Item | None = None,
+    role_A: Role | None = None,
+    opener: str | None = None,
 ) -> Episode:
     """mu: episode의 regime, reservation, urgency, stance + item(evidence)을 샘플링.
 
@@ -287,11 +329,47 @@ def sample_episode(
     implementation/env.py와 동일하게 유지한다. 다만 ZOPA의 **중심**(m)은 더 이상
     임의의 uniform 난수가 아니라, item의 fair_price(listing_price - 결함 총액)에
     앵커링한다.
+
+    p_max/z_range/q_range 스케일링 (2026-07-28 추가): 실 데이터는 listing_price가
+    $20~$10,800로 넓게 퍼져있어서, 이 세 값이 절대 달러 고정값(옛 기본값 p_max=100,
+    z_range=q_range=(5,40))이면 item.listing_price가 100을 넘는 순간부터 m이 p_max
+    근처로 잘려 협상 범위가 실제 가격과 무관해진다.
+
+    논문(§3.3/Appendix H.2.1)의 data-grounded 버전은 이걸 상품별 과거 최저/최고가
+    (p_low/p_high)에서 유도한 분산 규모로 처리하는데, 우리 데이터는 아이템당
+    listing_price 하나뿐이라 그 값이 없다 -- 그래서 논문 공식을 그대로 옮기지 못하고
+    listing_price의 고정 퍼센트로 단순화한다(2026-07-28 사용자 결정, 데이터 한계로 인한
+    근사 -- 논문 methods/limitations에 명시할 것): z(=r_buyer-r_seller, ZOPA 전체 폭)를
+    listing_price의 15%~20%로 잡는다. p_max는 기본으로 listing_price를 쓰되(단독 호출
+    시 안전한 하한), run_negotiation.py처럼 카테고리 최댓값 등 더 넓은 값을 알고 있는
+    호출자는 p_max를 직접 넘겨 덮어쓸 수 있다.
+
+    item=None(mock 경로)이면 이 자동 계산을 안 타고 옛 절대값 기본값(p_max=100,
+    z_range=q_range=(5,40))을 그대로 쓴다 -- 기존 회귀 검증(6-family 300 episode 등,
+    decisions_log.md)이 이 숫자에 의존하므로 하위호환 유지.
+
+    role_A/opener (2026-07-30 추가): 기본(None)이면 예전처럼 rng.choice로 무작위 배정한다
+    -- 하위호환. 값을 넘기면 그 값을 강제로 쓰고 rng.choice 자체를 안 부른다 (rng 소비
+    횟수가 줄어들지만, episode_rng로 episode마다 독립 rng를 쓰는 호출부만 이 인자를 쓰므로
+    다른 episode의 샘플링에 영향 없음). 논문(4.1절)은 role×opener를 25episode/cell로
+    균등 배정하는 block design을 쓰는데, 우리 sample_episode의 기존 rng.choice는 완전
+    무작위라 n=100 배치에서 실제로 칸당 3~15개로 쏠리는 게 관측됨(2026-07-30,
+    decisions_log.md) -- 호출부(run_negotiation.py의 role_opener_for)가 episode_idx를
+    4칸에 순환 배정해서 이 인자로 강제하면 균등 배정을 재현할 수 있다.
     """
     weights = list(regime_weights) if regime_weights else [1.0] * len(regimes)
     regime = rng.choices(regimes, weights=weights)[0]
 
-    episode_item = item if item is not None else sample_item(rng, listing_price=(p_min + p_max) / 2)
+    if item is not None:
+        p_max = p_max if p_max is not None else item.listing_price
+        z_range = z_range if z_range is not None else (0.15 * item.listing_price, 0.20 * item.listing_price)
+        q_range = q_range if q_range is not None else (0.15 * item.listing_price, 0.20 * item.listing_price)
+        episode_item = item
+    else:
+        p_max = p_max if p_max is not None else 100.0
+        z_range = z_range if z_range is not None else (5.0, 40.0)
+        q_range = q_range if q_range is not None else (5.0, 40.0)
+        episode_item = sample_item(rng, listing_price=(p_min + p_max) / 2)
     m_anchor = fair_price(episode_item)
 
     if regime in ("overlap", "urgency_shift"):
@@ -306,8 +384,8 @@ def sample_episode(
     urgency_B = sample_urgency(rng, shifted=(regime == "urgency_shift"), shift=urgency_shift)
     stance_B = rng.choices(stance_prior, weights=stance_weights, k=1)[0]  # weights=None -> 균등 (regime과 동일 패턴)
 
-    role_A = rng.choice([Role.BUYER, Role.SELLER])
-    opener = rng.choice(["AgentOpens", "CounterpartOpens"])
+    role_A = role_A if role_A is not None else rng.choice([Role.BUYER, Role.SELLER])
+    opener = opener if opener is not None else rng.choice(["AgentOpens", "CounterpartOpens"])
     harshness = rng.uniform(*harshness_range)
 
     r_A = r_buyer if role_A == Role.BUYER else r_seller

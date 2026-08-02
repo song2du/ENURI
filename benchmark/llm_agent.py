@@ -14,6 +14,23 @@ Item.ground_truth_defects는 이 파일 어디에서도 읽지 않는다 -- env.
 CraigslistBargain 실제 이미지로 "이미지+forced tool call이 같이 동작하는가"만 스모크테스트하는
 용도다 -- 실제 결함 grounding 검증(citation_precision 등)은 팀원의 합성 이미지가 와야 가능.
 
+!! 로컬 이미지 + 태그 어휘 인용 (2026-07-28 추가) !! 실 데이터(결함-합성 이미지) 도착 후 두
+가지 보강: (1) `image_ref`가 로컬 파일 경로(http(s) 아님)여도 실제 이미지로 인식해서
+base64 data URI로 전송한다. (2) agent는 ground-truth Defect.id를 절대 못 보므로(정보
+비공개 규약), 결함을 인용하려면 "무슨 문자열을 써야 하는지" 알 방법이 없었다 -- 2026-07-25
+결정(logs/2026-07-25.md)대로, id 대신 **닫힌 태그 어휘**(defect_type 7종)를 프롬프트에
+미리 공개하고 그 단어 자체로 인용하게 한다. 이 어휘 공개는 "이 아이템에 실제로 어떤 결함이
+있는지"를 새는 게 아니라 "결함 카테고리가 이렇게 나뉜다"만 공개하는 것이라 정보 비공개
+규약과 안 충돌한다.
+
+!! id -> defect_type 매칭으로 단순화 (2026-07-28, 사용자 결정) !! 처음엔 "<type>_0"
+형식(Defect.id 그대로)으로 인용하게 시켰는데, 아이템당 결함이 0~1개뿐이라 "_0" 접미사는
+항상 고정값이라 아무 정보가 없다 -- 그런데 agent가 그 접미사를 빼먹거나 대소문자를
+틀리면 실제로 결함을 맞게 봤는데도 citation_precision 등에서 "실패"로 잡혔다. 측정
+목표는 "형식을 맞추는가"가 아니라 "인용해서 써먹는가"이므로, 접미사를 아예 없애고
+defect_type 단어 자체로만 비교한다 (대소문자/공백은 여기서 정규화). kernel.py/metrics.py도
+Defect.id 대신 Defect.defect_type으로 매칭하도록 같이 수정됨 (decisions_log.md 참고).
+
 model 기본값은 gpt-4o (2026-07-11 결정): 전략적 판단이 필요한 쪽(agent)에 더 강한 모델을,
 단순 렌더링만 하는 voice.py 쪽(gpt-4o-mini)에는 가벼운 모델을 배분 -- voice.py 모듈 docstring 참고.
 
@@ -33,16 +50,23 @@ CLAUDE.md "다음 작업"의 "평가 대상 agent 리스트 제출"과 연결) -
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import random
+from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from env import Action, Decision, Episode, Role
+from env import Action, Decision, Episode, PRICE_IMPACT_MAPPINGS, Role
+from kernel import favorability
 
 load_dotenv()  # .env의 OPENAI_API_KEY(및 있다면 OPENROUTER_API_KEY)를 환경변수로 로드
+
+# 닫힌 태그 어휘 (2026-07-28, logs/2026-07-25.md 결정) -- PRICE_IMPACT_MAPPINGS의 키를 그대로
+# 재사용해서 env.py와 어휘가 갈라지지 않게 한다 (어느 mapping preset이든 키는 동일 7종).
+_DEFECT_TAG_VOCAB = sorted(PRICE_IMPACT_MAPPINGS["B_moderate"].keys())
 
 _NEGOTIATE_TOOL = {
     "type": "function",
@@ -68,7 +92,9 @@ _NEGOTIATE_TOOL = {
                 "cited_defect_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "IDs of the defects actually mentioned in this message (will always be empty for now since there are no images yet). Empty array if none.",
+                    "description": "Defect type(s) you actually observed in the photo and are citing this "
+                    "message, using the defect type list given in the prompt (e.g. 'scratch'). Empty array "
+                    "if you don't cite any defect this turn.",
                 },
             },
             "required": ["decision", "price", "message", "cited_defect_ids"],
@@ -100,13 +126,38 @@ def format_history(history: list[tuple[int, str, Action]], side: str) -> str:
 
 
 def _has_real_image(item) -> bool:
-    """item.image_ref가 mock placeholder("placeholder://...")가 아니라 실제 http(s) URL인지.
-    env.py의 sample_item은 항상 placeholder를 쓰므로, 이게 True인 경우는 지금은 오직
-    CraigslistBargain 스모크테스트(craigslist_smoke.py)로 만든 Item뿐이다."""
-    return item.image_ref.startswith("http://") or item.image_ref.startswith("https://")
+    """item.image_ref가 mock placeholder("placeholder://...")가 아니라 실제 이미지인지 --
+    http(s) URL이거나(craigslist_smoke.py 경로), 실제 존재하는 로컬 파일 경로면(data_loader.py
+    경로, 2026-07-28 추가) True. env.py의 sample_item은 항상 placeholder를 쓰므로 mock
+    경로는 계속 False."""
+    if item.image_ref.startswith("http://") or item.image_ref.startswith("https://"):
+        return True
+    return os.path.isfile(item.image_ref)
 
 
-def _build_prompt(episode: Episode, history: list[tuple[int, str, Action]], side: str) -> tuple[str, str]:
+def _sniff_image_mime(data: bytes) -> str:
+    """확장자 대신 매직 바이트로 실제 이미지 포맷을 판별한다 -- 실 데이터의 synth/*.jpg는
+    파일명은 .jpg지만 실제로는 PNG(나노바나나 결함합성 API 출력이 항상 PNG라 확인됨,
+    2026-07-28), originals/*.jpg는 실제 JPEG라 확장자만으로는 못 믿는다."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    return "jpeg"  # JPEG(\xff\xd8\xff)가 기본, 이 데이터셋의 나머지 전부
+
+
+def _image_url(item) -> str:
+    """item.image_ref -> OpenAI 비전 API의 image_url 값. http(s)는 그대로 URL로, 로컬 파일은
+    base64 data URI로 인코딩한다 (2026-07-28 추가 -- data_loader.py가 넘기는 image_ref는
+    항상 로컬 절대경로). MIME 타입은 확장자가 아니라 _sniff_image_mime()으로 판별."""
+    if item.image_ref.startswith("http://") or item.image_ref.startswith("https://"):
+        return item.image_ref
+    raw = Path(item.image_ref).read_bytes()
+    data = base64.b64encode(raw).decode("ascii")
+    return f"data:image/{_sniff_image_mime(raw)};base64,{data}"
+
+
+def _build_prompt(
+    episode: Episode, history: list[tuple[int, str, Action]], side: str, *, include_image: bool
+) -> tuple[str, str]:
     role = episode.role_A  # 이 policy는 agent 전용이라 side는 항상 "agent"
     k = len(history) + 1
     item = episode.item
@@ -116,7 +167,11 @@ def _build_prompt(episode: Episode, history: list[tuple[int, str, Action]], side
         f"You are the {role.name}. You must call the negotiate_action tool exactly once per turn to record "
         "your move -- OFFER a price, ACCEPT the counterpart's last offer, or REJECT and walk away."
     )
-    photo_line = "\nA photo of the item is attached above -- look it over before deciding your move." if _has_real_image(item) else ""
+    photo_line = (
+        "\nA photo of the item is attached above -- look it over before deciding your move. "
+        "If you notice a defect, cite it in cited_defect_ids using its type, one of: "
+        f"{', '.join(_DEFECT_TAG_VOCAB)}."
+    ) if include_image else ""
     user = f"""Item for sale:
 - Category: {item.category}
 - Title: {item.title}
@@ -135,27 +190,31 @@ What is your move this round?"""
     return system, user
 
 
-def _user_content(episode: Episode, user_text: str) -> str | list[dict]:
-    """_has_real_image가 참이면 OpenAI 비전 API 형식(텍스트+image_url 블록 리스트)으로,
+def _user_content(episode: Episode, user_text: str, *, include_image: bool) -> str | list[dict]:
+    """include_image가 참이면 OpenAI 비전 API 형식(텍스트+image_url 블록 리스트)으로,
     아니면 기존처럼 평범한 문자열로 반환 -- 이미지 없는 기존 mock 경로는 동작이 안 바뀐다."""
-    item = episode.item
-    if not _has_real_image(item):
+    if not include_image:
         return user_text
     return [
         {"type": "text", "text": user_text},
-        {"type": "image_url", "image_url": {"url": item.image_ref}},
+        {"type": "image_url", "image_url": {"url": _image_url(episode.item)}},
     ]
 
 
-def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai"):
-    """kernel.py의 make_counterpart_policy와 같은 팩토리 패턴 -- model/provider를 클로저에
-    가둬서 policy(episode, history, side, rng) -> Action 시그니처에 맞춘 함수를 반환한다.
+def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai", use_image: bool = True):
+    """kernel.py의 make_counterpart_policy와 같은 팩토리 패턴 -- model/provider/use_image를
+    클로저에 가둬서 policy(episode, history, side, rng) -> Action 시그니처에 맞춘 함수를 반환한다.
 
     provider="openai"(기본값): 기존 동작 그대로, OPENAI_API_KEY로 OpenAI에 직결.
     provider="openrouter": 같은 OpenAI SDK 클라이언트를 OpenRouter의 base_url로 돌려서
     Claude/Gemini/Qwen 등 다른 provider 모델도 같은 코드 경로로 호출 (모듈 docstring의
     "multi-provider 지원" 절 참고). model 문자열은 이때 "anthropic/claude-opus-4.6"처럼
     OpenRouter 네이밍을 써야 한다.
+
+    use_image=False(2026-07-29 추가, pulse.pptx 슬라이드6 "visual 유/무 baseline"): 실 이미지가
+    있어도 일부러 안 보낸다 -- item.image_ref가 실제 이미지인지(_has_real_image, 데이터 사실)와
+    이번 실행이 그걸 실제로 쓸지(use_image, 실험 조건)를 분리해서, "이미지를 줬을 때와 안 줬을
+    때 협상 결과가 달라지는가"라는 gap을 같은 아이템으로 비교할 수 있게 한다.
     """
     if provider == "openai":
         client = OpenAI()  # OPENAI_API_KEY는 load_dotenv()로 이미 환경변수에 로드됨
@@ -165,23 +224,48 @@ def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai"):
         raise ValueError(f"unknown provider: {provider!r} (expected 'openai' or 'openrouter')")
 
     def policy(episode: Episode, history: list[tuple[int, str, Action]], side: str, rng: random.Random) -> Action:
-        system, user = _build_prompt(episode, history, side)
+        include_image = use_image and _has_real_image(episode.item)
+        system, user = _build_prompt(episode, history, side, include_image=include_image)
         response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": _user_content(episode, user)},
+                {"role": "user", "content": _user_content(episode, user, include_image=include_image)},
             ],
             tools=[_NEGOTIATE_TOOL],
             tool_choice={"type": "function", "function": {"name": "negotiate_action"}},
         )
-        call = response.choices[0].message.tool_calls[0]
-        args = json.loads(call.function.arguments)
-
-        decision = Decision[args["decision"]]
-        price = float(args["price"]) if args.get("price") is not None else None
-        cited = tuple(args.get("cited_defect_ids") or []) or None
-
-        return Action(decision=decision, price=price, message=args.get("message"), cited_defect_ids=cited)
+        # 응답 파싱 전체를 하나의 방어막으로 묶는다 (2026-08-02, qwen3.6-plus의 price=""와
+        # kimi-k3의 tool_calls=None을 실측하며 확장). 처음엔 price 파싱만 개별로 감쌌는데,
+        # `tool_choice`로 강제 호출을 요구해도 OpenRouter로 붙는 provider가 이걸 100% 안
+        # 지킬 수 있다는 게 확인된 이상, "이 응답을 신뢰할 수 있는 구조로 못 읽는다"는 카테고리
+        # 전체(빈 tool_calls, JSON 파싱 실패, decision 값 이상, price 파싱 실패 등)를 한 곳에서
+        # 같은 방식으로 처리하는 게 더 견고하다 -- env.py의 "LLM이 이상한 값을 내도 벤치마크가
+        # 안 죽어야 한다" 철학(run_episode 참고)의 연장.
+        try:
+            call = response.choices[0].message.tool_calls[0]
+            args = json.loads(call.function.arguments)
+            decision = Decision[args["decision"]]
+            raw_price = args.get("price")
+            price = float(raw_price) if raw_price not in (None, "") else None
+            if decision == Decision.OFFER and price is None:
+                raise ValueError("OFFER without a usable price")
+            # 대소문자/공백만 정규화 -- defect_type 자체가 틀렸으면(할루시네이션) 그대로 안
+            # 걸러지고 kernel.py/metrics.py의 defect_type 매칭에서 "실제 없는 결함"으로
+            # 정상적으로 잡혀야 함.
+            cited = tuple(c.strip().lower() for c in (args.get("cited_defect_ids") or [])) or None
+            return Action(decision=decision, price=price, message=args.get("message"), cited_defect_ids=cited)
+        except (KeyError, ValueError, TypeError, AttributeError, IndexError):
+            # 논문 H.1.5의 JSON-파싱-실패 폴백과 동일한 규칙("상대 offer가 걸어나가기보다
+            # 나으면 수락, 아니면 거절") -- fixed_concession_agent.py가 이미 쓰는 걸 재사용,
+            # 새 규칙을 만들지 않는다.
+            last_action = history[-1][2] if history else None
+            if (
+                last_action is not None
+                and last_action.decision == Decision.OFFER
+                and favorability(last_action.price, episode.r_A, episode.role_A, episode.p_max - episode.p_min) >= 0
+            ):
+                return Action(decision=Decision.ACCEPT, price=None, message=None, cited_defect_ids=None)
+            return Action(decision=Decision.REJECT, price=None, message=None, cited_defect_ids=None)
 
     return policy
