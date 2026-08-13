@@ -233,12 +233,14 @@ def main() -> None:
     parser.add_argument(
         "--model", type=str, default="gpt-4o",
         help="agent에 쓸 모델 -- provider=openai면 'gpt-4o'처럼 직결 이름, provider=openrouter면 "
-             "'anthropic/claude-opus-4.6'처럼 'provider/model' 네이밍 (llm_agent.py 참고)",
+             "'anthropic/claude-opus-4.6'처럼 'provider/model' 네이밍, provider=google이면 "
+             "'gemini-3.1-pro-preview'처럼 Google 자체 모델 ID (llm_agent.py 참고)",
     )
     parser.add_argument(
-        "--provider", type=str, default="openai", choices=["openai", "openrouter"],
+        "--provider", type=str, default="openai", choices=["openai", "openrouter", "google"],
         help="agent LLM 호출 경로 (llm_agent.py의 make_llm_agent_policy). openrouter는 "
-             "OPENROUTER_API_KEY 필요 -- 발급 전까지는 openai(기본값)만 동작",
+             "OPENROUTER_API_KEY, google은 GOOGLE_API_KEY 필요 (2026-08-03 추가 -- Gemini/Gemma를 "
+             "OpenRouter 마진 없이 Google 계정으로 직결)",
     )
     parser.add_argument(
         "--fc-rate", type=str, default=None, choices=list(FC_RATES.keys()),
@@ -286,6 +288,13 @@ def main() -> None:
         help="실 이미지가 있어도 agent에게 안 보냄 -- pulse.pptx 슬라이드6 visual 유/무 baseline용 "
              "(llm_agent.py의 make_llm_agent_policy use_image 참고). --fc-rate는 원래 이미지를 안 보므로 무관",
     )
+    parser.add_argument(
+        "--show-cost", action="store_true",
+        help="provider=openrouter일 때 실제 청구 비용(USD)을 매 턴 찍고 마지막에 합산해서 보여줌 "
+             "(2026-08-03 추가, llm_agent.py의 make_llm_agent_policy cost_log 참고 -- OpenRouter "
+             "usage.include=true로 받은 실측값, 토큰수 x 공개단가 수동환산 아님). openai/google은 "
+             "아직 비용 조회 배관이 없어서 무시됨(경고만 찍음).",
+    )
     args = parser.parse_args()
 
     items = None
@@ -301,10 +310,18 @@ def main() -> None:
         # 카테고리 marginal을 정확히 균등 배정 (2026-08-02, category_item_schedule docstring 참고) --
         # 예전엔 셔플+순환(items[(i-1)%len(items)])이라 카테고리 비율이 셔플 운에 맡겨져 있었음.
         item_schedule = category_item_schedule(items, args.episodes, args.seed)
+    cost_log: list[float] | None = None
     if args.fc_rate is not None:
         agent_policy = make_fixed_concession_policy(FC_RATES[args.fc_rate])
     else:
-        agent_policy = make_llm_agent_policy(model=args.model, provider=args.provider, use_image=args.use_image)
+        if args.show_cost:
+            if args.provider == "openrouter":
+                cost_log = []
+            else:
+                print(f"(--show-cost 무시됨 -- provider={args.provider}는 아직 비용 조회 배관 없음)")
+        agent_policy = make_llm_agent_policy(
+            model=args.model, provider=args.provider, use_image=args.use_image, cost_log=cost_log
+        )
     counterpart_policy = make_counterpart_policy(args.family)
     if args.voice:
         counterpart_policy = add_voice(counterpart_policy)
@@ -385,6 +402,10 @@ def main() -> None:
         for name, value in compute_metrics(records).items():
             value_str = f"{value:.3f}" if value is not None else "None"
             print(f"  {name}: {value_str}")
+
+    if cost_log is not None:
+        print()
+        print(f"cost (openrouter, agent turns only, {len(cost_log)} calls): ${sum(cost_log):.6f} total")
 
 
 if __name__ == "__main__":

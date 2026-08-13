@@ -46,6 +46,16 @@ tool_choice/image_url 컨텐츠 블록 포함)으로 여러 provider를 통일�
 다름). OPENROUTER_API_KEY는 아직 미발급 상태(교수님께 연구실 결제 요청 예정, benchmark/
 CLAUDE.md "다음 작업"의 "평가 대상 agent 리스트 제출"과 연결) -- 그래서 이 경로는 구조만
 준비, 실제 호출 스모크테스트는 키 도착 후.
+
+!! google provider 추가 (2026-08-03) !! Gemini/Gemma는 OpenRouter를 거치지 않고
+`provider="google"`로 Google 자체 API(OpenAI 호환 엔드포인트, base_url=
+".../v1beta/openai/")에 직결한다 -- 사용자가 Google 계정에 크레딧을 충전해둔 상태라
+OpenRouter 마진 없이 직접 호출하는 게 비용상 유리하다는 2026-08-03 판단. 같은 OpenAI
+SDK/엔드포인트 호환 방식이라 `_NEGOTIATE_TOOL`/`_build_prompt`/`_user_content`/응답
+파싱은 openrouter 때와 동일하게 그대로 재사용. 모델 문자열은 OpenRouter 슬러그
+("google/gemini-3.1-pro")가 아니라 Google 자체 모델 ID(예: "gemini-3.1-pro-preview")를
+써야 함 -- 논문 로스터(Gemini 3.1 Pro Preview / Gemma 4 31B IT)와 정확히 맞는 ID인지는
+아직 스모크테스트 전이라 AI Studio 콘솔에서 재확인 필요. `.env`의 `GOOGLE_API_KEY`를 읽음.
 """
 
 from __future__ import annotations
@@ -54,8 +64,10 @@ import base64
 import json
 import os
 import random
+import time
 from pathlib import Path
 
+import openai
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -63,6 +75,24 @@ from env import Action, Decision, Episode, PRICE_IMPACT_MAPPINGS, Role
 from kernel import favorability
 
 load_dotenv()  # .env의 OPENAI_API_KEY(및 있다면 OPENROUTER_API_KEY)를 환경변수로 로드
+
+# 일시적 API 장애 재시도 (2026-08-04 추가) -- 400-episode 정식 실행 중 OpenAI가
+# `InternalServerError`(500, "server_error")를 던지며 몇 시간짜리 배치 전체가 죽는 걸
+# 실측(decisions_log.md 참고). openai SDK 자체도 기본 재시도(max_retries=2)가 있지만
+# 그걸로 부족한 경우가 실제로 있었으므로, policy() 레벨에서 한 번 더 감싼다. 재시도
+# 대상은 "다시 시도하면 성공할 수 있는" 상태(5xx/429/네트워크 연결 문제)로만 한정 --
+# BadRequestError(400, 우리 쪽 요청 자체가 잘못됨)나 AuthenticationError(401, 키 문제)
+# 처럼 재시도해도 절대 안 풀리는 에러까지 여기서 삼키면 진짜 버그를 숨기게 되므로 제외.
+# 2026-08-05 추가: `json.JSONDecodeError`도 포함 -- C_aggressive 정식 실행 중 응답 바디가
+# 중간에 잘려서(네트워크 문제로 추정) `response.json()`이 그대로 실패하며 크래시하는 걸
+# 실측. 이건 openai SDK 예외로 안 감싸이고 httpx가 raw json 파싱에서 바로 터뜨리는
+# 케이스라 별도로 추가 -- 응답 바디가 잘리는 것도 "다시 요청하면 온전히 올 수 있는"
+# 일시적 네트워크 문제로 분류.
+_RETRYABLE_API_ERRORS = (
+    openai.InternalServerError, openai.RateLimitError, openai.APIConnectionError, json.JSONDecodeError,
+)
+_MAX_API_RETRIES = 4
+_RETRY_BACKOFF_SECONDS = 5
 
 # 닫힌 태그 어휘 (2026-07-28, logs/2026-07-25.md 결정) -- PRICE_IMPACT_MAPPINGS의 키를 그대로
 # 재사용해서 env.py와 어휘가 갈라지지 않게 한다 (어느 mapping preset이든 키는 동일 7종).
@@ -201,7 +231,9 @@ def _user_content(episode: Episode, user_text: str, *, include_image: bool) -> s
     ]
 
 
-def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai", use_image: bool = True):
+def make_llm_agent_policy(
+    model: str = "gpt-4o", provider: str = "openai", use_image: bool = True, cost_log: list[float] | None = None
+):
     """kernel.py의 make_counterpart_policy와 같은 팩토리 패턴 -- model/provider/use_image를
     클로저에 가둬서 policy(episode, history, side, rng) -> Action 시그니처에 맞춘 함수를 반환한다.
 
@@ -210,31 +242,63 @@ def make_llm_agent_policy(model: str = "gpt-4o", provider: str = "openai", use_i
     Claude/Gemini/Qwen 등 다른 provider 모델도 같은 코드 경로로 호출 (모듈 docstring의
     "multi-provider 지원" 절 참고). model 문자열은 이때 "anthropic/claude-opus-4.6"처럼
     OpenRouter 네이밍을 써야 한다.
+    provider="google"(2026-08-03 추가): Gemini/Gemma를 OpenRouter 대신 Google 자체 API로
+    직결 (모듈 docstring의 "google provider 추가" 절 참고). model 문자열은 Google 자체
+    모델 ID(예: "gemini-3.1-pro-preview")를 써야 한다 -- OpenRouter 슬러그와 다름.
 
     use_image=False(2026-07-29 추가, pulse.pptx 슬라이드6 "visual 유/무 baseline"): 실 이미지가
     있어도 일부러 안 보낸다 -- item.image_ref가 실제 이미지인지(_has_real_image, 데이터 사실)와
     이번 실행이 그걸 실제로 쓸지(use_image, 실험 조건)를 분리해서, "이미지를 줬을 때와 안 줬을
     때 협상 결과가 달라지는가"라는 gap을 같은 아이템으로 비교할 수 있게 한다.
+
+    cost_log(2026-08-03 추가, 실비용 측정용): 리스트를 넘기면 provider="openrouter"일 때
+    매 호출마다 실제 청구 비용(USD)을 append한다. OpenRouter가 요청에 `usage: {"include":
+    true}`를 실으면 응답 `usage.cost`에 그 요청의 실제 과금액(토큰 단가뿐 아니라 프롬프트
+    캐싱 할인 등까지 반영된 최종값)을 얹어준다는 걸 실측 확인(2026-08-03) -- 토큰 수 x
+    공개 단가로 수동 환산하는 것보다 정확. 이전(2026-08-02) 비용 파일럿은 이 기능 없이
+    수동으로 환산했는데, 이번부터는 이 값을 그대로 합산하면 됨. openai/google
+    provider는 OpenRouter 전용 파라미터라 굳이 안 건드림(비용 측정이 필요해지면 그때
+    각자 방식으로 추가).
     """
     if provider == "openai":
         client = OpenAI()  # OPENAI_API_KEY는 load_dotenv()로 이미 환경변수에 로드됨
     elif provider == "openrouter":
         client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.environ["OPENROUTER_API_KEY"])
+    elif provider == "google":
+        client = OpenAI(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=os.environ["GOOGLE_API_KEY"],
+        )
     else:
-        raise ValueError(f"unknown provider: {provider!r} (expected 'openai' or 'openrouter')")
+        raise ValueError(f"unknown provider: {provider!r} (expected 'openai', 'openrouter', or 'google')")
 
     def policy(episode: Episode, history: list[tuple[int, str, Action]], side: str, rng: random.Random) -> Action:
         include_image = use_image and _has_real_image(episode.item)
         system, user = _build_prompt(episode, history, side, include_image=include_image)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": _user_content(episode, user, include_image=include_image)},
-            ],
-            tools=[_NEGOTIATE_TOOL],
-            tool_choice={"type": "function", "function": {"name": "negotiate_action"}},
-        )
+        extra_kwargs = {}
+        if cost_log is not None and provider == "openrouter":
+            extra_kwargs["extra_body"] = {"usage": {"include": True}}
+        for attempt in range(_MAX_API_RETRIES + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": _user_content(episode, user, include_image=include_image)},
+                    ],
+                    tools=[_NEGOTIATE_TOOL],
+                    tool_choice={"type": "function", "function": {"name": "negotiate_action"}},
+                    **extra_kwargs,
+                )
+                break
+            except _RETRYABLE_API_ERRORS:
+                if attempt == _MAX_API_RETRIES:
+                    raise
+                time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))  # 5s, 10s, 15s, 20s
+        if cost_log is not None and provider == "openrouter":
+            cost = getattr(response.usage, "cost", None)
+            if cost is not None:
+                cost_log.append(cost)
         # 응답 파싱 전체를 하나의 방어막으로 묶는다 (2026-08-02, qwen3.6-plus의 price=""와
         # kimi-k3의 tool_calls=None을 실측하며 확장). 처음엔 price 파싱만 개별로 감쌌는데,
         # `tool_choice`로 강제 호출을 요구해도 OpenRouter로 붙는 provider가 이걸 100% 안

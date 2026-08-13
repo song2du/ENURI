@@ -1160,3 +1160,322 @@ Qwen(AGR+ 1.0/CSE+ 0.594) 둘 다 SE+는 비슷(~0.6)한데 도달 방식이 다
 `--episodes 1`처럼 카테고리 수(4)보다 작은 배치는 항상 알파벳 순으로 먼저 오는 카테고리
 쪽에 치우친다(예: episodes=1이면 항상 bike). `run_negotiation.py`는 원래 "개발 중 눈으로
 확인하기 위한 스크립트"(모듈 docstring)라 정식 metric에는 영향 없음.
+
+## 2026-08-03 (팀원 세션, 이후 로스터 확장으로 대체됨) — claude-opus-4.6 -> claude-sonnet-5, gpt-4o 추가 제안
+
+**병합 메모 (2026-08-05)**: 아래는 팀원(2dubakgeun)이 다른 세션에서 커밋한 로스터 변경
+(claude-opus-4.6 -> claude-sonnet-5로 교체, gpt-5.5 비활성화)이다. 그 이후 이 세션에서
+로스터가 훨씬 크게 확장됐고(claude-opus-4.6/claude-sonnet-4.6 둘 다 유지, gpt-5.5/gpt-4o
+둘 다 유지, gemini/gemma/grok/inkling/qwen-vl/nemotron 추가 등, 아래 2026-08-03 이후
+항목들 참고), 이미 그 확장된 16-agent 로스터로 4매핑×100episode 정식 실행까지 완료했다.
+`claude-sonnet-5`는 스모크테스트 전이라 유효성 미검증 상태였던 반면, 이 세션은
+`claude-sonnet-4.6`을 스모크테스트까지 마치고 실제로 사용했다 -- 그래서 병합 시
+`mapping_robustness.py`는 이 세션의 버전(현재 실행 결과와 일치)을 그대로 유지하고,
+팀원의 이 제안은 채택하지 않았다. 기록은 히스토리 보존 차원에서 남겨둔다.
+
+## (팀원 원본 기록, 아래)
+
+**배경**: `benchmark/CLAUDE.md` "다음 작업" 2026-08-02 메모에 이미 예고돼 있던 항목 --
+착수 전 사용자에게 의도 재확인(메모 지시대로).
+
+**claude-opus-4.6 -> claude-sonnet-5**: 사용자 지정. OpenRouter 슬러그도 사용자가 직접
+줌(`anthropic/claude-sonnet-5`) -- 이전 claude-opus-4.6과 같은 패턴으로
+openrouter.ai/models에서 실제로 서빙되는지는 아직 스모크테스트 전, 다음 실행 때 확인 필요.
+
+**gpt-5.5 -> gpt-4o "되돌리기" 안 함, 대신 gpt-4o를 별도 agent로 추가**: 애초에 이
+메모는 "비용 절감 목적으로 되돌리는 것으로 추정"이라고 적어뒀는데, 확인해보니 사용자
+의도는 되돌리기가 아니라 추가였음(2026-08-01에 "프론티어끼리 비교" 취지로 gpt-4o를
+gpt-5.5로 뺐던 결정은 안 뒤집음). `provider="openai"` 그대로, gpt-4o-mini와 같은 경로라
+새 키 불필요.
+
+**결과**: `default_agents()` 8개 -> 9개(FC-1/10/30, gpt-5.5, gpt-4o, gpt-4o-mini,
+claude-sonnet-5, qwen3.6-plus, kimi-k3). qwen3.6-plus/kimi-k3는 안 건드림.
+
+**남은 것**: claude-sonnet-5/gpt-4o 둘 다 아직 스모크테스트 안 함(무결함 아이템에서
+할루시네이션 없는지, claude-sonnet-5는 OpenRouter 슬러그 자체가 유효한지부터). 정식
+실행(8x4 episode) 전에 먼저 확인할 것. `visual_ablation.py`의 `default_agents()`는 이
+변경과 무관 -- 아직 gpt-4o/gpt-4o-mini만 쓰고 있으므로 건드리지 않음.
+
+---
+
+## 2026-08-03 — `provider="google"` 추가 (Gemini/Gemma를 OpenRouter 대신 직결) + 로스터 10개로 확장
+
+**동기(사용자 지적)**: 논문(Table 9) 13개 로스터 중 Gemini/Gemma는 아직 미포함이었는데,
+사용자가 개인 Google 계정에 크레딧(40만원)을 충전해뒀으니 OpenRouter 마진 없이 Google
+API로 직접 붙이는 게 비용상 유리하다고 판단. 다른 3개 provider(openai/openrouter)와
+구조를 맞춰 `llm_agent.py`의 `make_llm_agent_policy`에 `provider="google"` 분기를 추가.
+
+**구현**: Google의 OpenAI 호환 엔드포인트(`generativelanguage.googleapis.com/v1beta/openai/`)로
+OpenAI SDK를 그대로 돌리는 방식(openrouter 때와 동일 패턴) -- `_NEGOTIATE_TOOL`/
+`_build_prompt`/`_user_content`/응답 파싱 코드 전부 무수정 재사용. `.env`의
+`GOOGLE_API_KEY` 사용. `run_negotiation.py --provider` choices에도 추가.
+
+모델 문자열은 OpenRouter 슬러그("google/gemini-3.1-pro")가 아니라 Google 자체 모델
+ID를 써야 함 -- 사용자가 AI Studio 콘솔에서 직접 확인해서 준 ID: `gemini-3.1-pro-preview`,
+`gemma-4-31b-it`.
+
+**스모크테스트로 확인한 것 (비용 최소화를 위해 2단계로 나눠 검증)**:
+1. 멀티모달 자체 지원 여부 -- forced tool_choice 없이 실 결함 합성 이미지(`synth/
+   6148379415_0_defect.jpg`, 덴트)를 텍스트+image_url로 직접 보내고 한 문장 묘사를
+   요청. 둘 다 성공 (Gemini: "prominent dent... near the center", Gemma: "significant
+   dent in the center" -- 단, Gemma는 응답에 `<thought>...</thought>` 추론 블록을 기본으로
+   붙이는 특성 확인. forced tool_choice 경로는 `tool_calls`만 읽으므로 파싱에는 영향 없음,
+   기록만 남김).
+2. 실제 배관(forced tool_choice `negotiate_action` + 실 데이터셋 이미지) -- `run_negotiation.py
+   --provider google --episodes 1 --data data/dataset_v1/full_run/results.jsonl`로 둘 다
+   1-episode 정상 종료. Gemma는 ground-truth 결함(dent)을 실제로 인용하며 협상까지 성공
+   (`cited_defect_ids`에 반영, 가격도 결함을 근거로 딜). Gemini 쪽 1-episode 표본은
+   우연히 결함을 인용 안 했지만(협상 자체는 정상 완료), 1번 테스트로 비전 인식 자체는
+   이미 확인됐으므로 배관 통과로 판단.
+
+**로스터 반영**: `default_agents()`에 `gemini-3.1-pro-preview`/`gemma-4-31b-it` 2개 추가,
+총 10개(`mapping_robustness.py` 참고). 매핑 로버스트니스 정식 실행 비용이 8-agent 기준
+견적(~$78, benchmark/CLAUDE.md "다음 작업")보다 늘어나지만, 이 2개 agent 비용은 연구실
+OpenRouter 예산이 아니라 사용자 개인 Google 크레딧에서 나가므로 8/29 마감(2026-08-05)
+예산 계획과는 무관.
+
+## 2026-08-03 (이어서) — qwen3-vl-32b-instruct + thinkingmachines/inkling 추가 (로스터 12개)
+
+**동기**: 사용자가 Qwen 계열을 하나 더(다른 사이즈/계열) 넣고 싶다고 해서 처음엔
+`qwen/qwen3.7-plus`(기존 `qwen3.6-plus`의 후속 버전)를 제안했으나, 스모크테스트 직전에
+사용자가 `qwen/qwen3-vl-32b-instruct`(32B, VL 특화 -- 버전업이 아니라 별개 계열)로
+바꾸자고 함. 추가로 `thinkingmachines/inkling`도 "요즘 SOTA급 오픈 웨이트로 화제"라는
+사용자 판단으로 같이 추가.
+
+**스모크테스트** (`run_negotiation.py --provider openrouter --episodes 1 --data
+data/dataset_v1/full_run/results.jsonl`): 둘 다 forced tool_choice negotiate_action +
+실 이미지 배관 정상 통과.
+
+**발견 -- thinkingmachines/inkling 할루시네이션 실측**: 스모크 1-episode의 아이템은
+`ground_truth_defects=[]`(결함 없음)인데, inkling은 1턴부터 "rust on the chain/
+components", "scratches on the frame", "staining/wear on the seat" 등 사진에 없는
+결함을 봤다고 주장하며 가격을 깎았다 -- `hallucination_rate` 지표가 정확히 잡아야 할
+실패 패턴의 실측 사례. 표본 1개라 로스터에서 빼지 않기로 사용자가 결정(그대로 포함),
+단 정식 실행 결과에서 이 agent의 hallucination_rate를 먼저 확인하기로 함 -- 학술제
+논문 methods/limitations에 이 관찰을 남길 것.
+
+**로스터 반영**: `default_agents()`에 2개 더 추가되어 총 12개. Qwen 계열이
+qwen3.6-plus/qwen3-vl-32b-instruct 둘로 늘면서 2026-08-01에 정한 "미국산 2 + 중국산 2"
+균형은 더 이상 정확히 안 맞음(중국산 오픈 웨이트 쪽이 더 많아짐) -- 균형 자체를 목표로
+유지하기보다 다양성 확보 쪽으로 로스터 취지가 넓어진 것으로 이해하고 진행. 두 agent 다
+OpenRouter 경유라 연구실 예산에 포함됨 -- 8-agent 견적(~$78)보다 실비용이 더 늘어남,
+정식 실행 전 예산 재확인 필요.
+
+## 2026-08-03 (이어서 2) — claude-sonnet-4.6 + gpt-4o 추가 (로스터 14개)
+
+**배경**: 팀원이 "GPT 2개/Claude 2개/Gemini 3개/Qwen 3개/Kimi 1개" 구성(벤더당 여러 티어)을
+제안. 논의 결과(사용자 vs Claude) "같은 벤더 여러 티어보다 벤더 다양성이 진단 가치가
+크다"는 쪽으로 의견이 모였고(이 벤치마크 목표가 순위표가 아니라 조건별 실패 지점 진단이라
+서로 다른 아키텍처를 넓게 보는 게 더 유용, benchmark/CLAUDE.md 측정 프레이밍 참고),
+Gemini 쪽 3-티어 확장(gemini-3.6-flash 추가)은 보류. 다만 사용자가 Claude/GPT는 티어
+하나씩(Sonnet 4.6, gpt-4o) 추가하기로 최종 결정.
+
+**gpt-4o 재투입 관련 확인**: 2026-08-01에 "세대 뒤처짐"으로 gpt-5.5로 교체되며 로스터에서
+빠졌던 모델이라, 이번 재투입이 그 결정을 뒤집는 게 아니라는 점 확인 필요 -- gpt-5.5(메인
+프론티어 슬롯)는 그대로 두고, gpt-4o는 "구세대 GPT 비교 포인트"로 별도 슬롯 추가(gpt-4o-mini
+바닥 앵커와도 다른 목적). 즉 로스터 취지상 교체가 아니라 순수 추가.
+
+**스모크테스트** (`--episodes 1 --data data/dataset_v1/full_run/results.jsonl`): `anthropic/
+claude-sonnet-4.6`(openrouter), `gpt-4o`(openai 직결) 둘 다 정상 통과 -- 같은 아이템
+(ground_truth_defects=['scratch_0'])에서 둘 다 실제 결함을 정확히 인용하며 협상 완료,
+할루시네이션 없음.
+
+**로스터 반영**: `default_agents()` 총 14개(FC 3 + LLM 11). 예산 재확인 필요성이 더 커짐 --
+OpenRouter 경유 agent가 이제 6개(claude-opus-4.6/claude-sonnet-4.6/qwen3.6-plus/
+qwen3-vl-32b-instruct/kimi-k3/thinkingmachines-inkling)로 늘어 8-agent 견적(~$78)과 실제
+비용 차이가 상당할 것으로 예상, 정식 실행 전 반드시 재견적할 것.
+
+## 2026-08-03 (이어서 3) — gemini-3.6-flash 추가 (로스터 15개, 최종)
+
+앞서 보류했던 Gemini 3-티어 확장을 사용자가 최종 채택 -- Claude/GPT처럼 Gemini도 Pro
+(`gemini-3.1-pro-preview`) + 경량(`gemini-3.6-flash`) 비교 구도로 맞춤. `provider="google"`
+직결(개인 크레딧). 스모크테스트(`--episodes 1 --data data/dataset_v1/full_run/results.jsonl`)에서
+실 결함(rust)을 정확히 인용하며 협상 완료, 정상 통과.
+
+**최종 로스터 (15개)**: FC-1/10/30(3) + gpt-5.5/gpt-4o-mini/gpt-4o(3, openai) +
+claude-opus-4.6/claude-sonnet-4.6(2, openrouter) + qwen3.6-plus/qwen3-vl-32b-instruct(2,
+openrouter) + kimi-k3(1, openrouter) + thinkingmachines-inkling(1, openrouter) +
+gemini-3.1-pro-preview/gemini-3.6-flash/gemma-4-31b-it(3, google). OpenRouter 경유 6개는
+연구실 예산, google 경유 3개는 사용자 개인 크레딧, openai 경유 3개는 기존처럼 별도 계약.
+정식 실행(4 매핑 × 100 episode) 전 OpenRouter 6개 기준 재견적 필요 (8-agent/$78 견적은
+더 이상 유효하지 않음).
+
+## 2026-08-03 (이어서 4) — 논문 미보유 벤더 3개 추가 (로스터 18개, 최종)
+
+**배경**: "벤더당 여러 티어보다 다양한 벤더 비교가 낫다"는 원칙을 팀원한테 보내기 전,
+사용자가 실제로 논문 Table 9와 우리 로스터를 대조해달라고 요청 -- 논문 13개 중 우리한테
+없는 벤더는 DeepSeek(비전 미지원으로 2026-08-01에 이미 탈락 확인됨)/GLM-5.1/
+Doubao-Seed-2.0-Pro/Grok 4.2뿐이었음. 그런데 GLM은 사용자 확인 결과 **텍스트 전용**이라
+이미지 필수인 이 벤치마크에서 애초에 평가 대상이 될 수 없고, Doubao는 논문 버전(2.0-pro)이
+OpenRouter에 없고 **2.0-lite만 제공**이라 논문과 다른 버전을 억지로 넣는 셈이라 보류.
+
+**대체**: 그 자리를 xAI(`x-ai/grok-4.5` -- 논문의 Grok 4.2 최신 버전), Xiaomi
+(`xiaomi/mimo-v2.5` -- 논문엔 없는 새 벤더), NVIDIA(`nvidia/nemotron-3-nano-omni-30b-a3b-
+reasoning:free` -- 마찬가지로 새 벤더, omni-multimodal reasoning 모델)로 채움 -- 애초 목표가
+"논문 벤더 100% 복제"가 아니라 "벤더 다양성"이므로, 논문에 없던 벤더라도 이미지 지원되는
+새 아키텍처면 그 취지에 부합한다고 판단.
+
+**스모크테스트**: 셋 다 openrouter로 실 이미지 배치 정상 통과. grok-4.5는 결함 없는
+아이템에서 결함을 지어내지 않고 정확히 "no major visible defects"로 판단(할루시네이션 없음,
+thinkingmachines/inkling과 대조됨). **주의**: `nemotron-...:free`는 OpenRouter 무료 티어라
+100-episode 정식 실행 때 rate limit으로 막힐 위험 있음 -- 정식 실행 직전 재확인 필요.
+
+**최종 로스터 (18개)**: 위 15개 + grok-4.5/mimo-v2.5/nemotron-3-nano-omni-reasoning(3,
+전부 openrouter). OpenRouter 경유가 9개로 늘어 예산 재견적이 더 시급해짐. 팀원에게 보낼
+메시지("다양한 모델 비교가 낫다")와 이제 실제로 정합 -- 벤더 수 기준: OpenAI/Anthropic/
+Google이 여전히 2~3개씩이라 완전한 "벤더당 1개"는 아니지만, 새로 늘어난 3자리는 전부
+논문에 없던/부족했던 벤더를 메운 것이라 다양성 확장 방향과는 일치.
+
+## 2026-08-03 (이어서 5) — 철학 기반 재정렬 (예산 고려 중단, gpt-4o-mini 유지 결정)
+
+**예산 판단 중단**: 사용자가 "예산 계산하는 데에도 돈이 든다"며 견적 재확인을 그만두기로
+함 -- 이후 로스터 결정은 순수 방법론 기준으로만 진행.
+
+**로스터 원칙 재정의**: "벤더당 여러 티어를 쌓기"보다 "벤더 안에서 명확한 이분법 + 벤더
+다양성"으로 원칙 변경. 확정된 짝: GPT(프론티어 vs 구세대 -- gpt-5.5/gpt-4o),
+Claude(추론 vs 일상 -- opus-4.6/sonnet-4.6), Qwen(범용 vs VL특화 -- 3.6-plus/
+3-vl-32b-instruct), Gemini(상용 vs 오픈웨이트 -- 3.1-pro-preview/gemma-4-31b-it). 짝
+없이 벤더 다양성만으로 유지: kimi-k3, grok-4.5, thinkingmachines-inkling,
+nemotron-3-nano-omni-reasoning(무료라 예산 무관하게 유지 결정) -- 사용자 스스로도 "애매하다"
+인정했지만 "그래도 벤치마크니까"(커버리지 가치)로 유지.
+
+**gpt-4o-mini 유지 결정 (제외 논의 번복)**: 사용자가 처음엔 "바닥 모델을 미리 넣고 가는 건
+발견이 아니라 조작"이라며 제외를 제안 -- 방법론적으로 타당한 지적. Claude가 반론: 논문에서
+GPT-4o-mini가 바닥 앵커인 이유는 "그냥 약해서"가 아니라 "가장 단순한 FC 베이스라인조차
+못 이기는 유일한 모델"이라는 논문 자체의 진단 포인트이고, 이게 없으면 우리 metric들이
+약한 모델과 강한 모델을 실제로 구분하는지 검증할 캘리브레이션 기준이 없어짐. 사용자가
+이 반론을 받아들여 최종 유지.
+
+**제외 방식 컨벤션 (사용자 지정)**: 로스터에서 빼는 모델은 `default_agents()`에서 코드를
+지우지 않고 `#AgentConfig(...)`로 주석 처리만 한다 -- 나중에 되살리기 쉽게. gemini-3.6-flash/
+xiaomi-mimo-v2.5가 이 방식으로 제외됨(이분법 프레임에 안 맞는다는 이유, 성능/품질 문제
+아님).
+
+**최종 로스터 (활성 16개)**: FC-1/10/30(3) + gpt-5.5/gpt-4o-mini/gpt-4o(3, openai) +
+claude-opus-4.6/claude-sonnet-4.6(2, openrouter) + qwen3.6-plus/qwen3-vl-32b-instruct(2,
+openrouter) + kimi-k3(1, openrouter) + gemini-3.1-pro-preview/gemma-4-31b-it(2, google) +
+grok-4.5(1, openrouter) + nemotron-3-nano-omni-reasoning(1, openrouter, free) +
+thinkingmachines-inkling(1, openrouter). 주석 처리로 비활성: gemini-3.6-flash, mimo-v2.5.
+
+
+## 2026-08-04 — 정식 실행(16 agent x 4 매핑 x 100 episode) 착수 + 마감일 착오 정정
+
+**절전모드로 진행 멈춤**: `mapping_robustness.py --episodes 100`으로 정식 실행 시작 후
+컴퓨터가 절전모드에 들어가며 네트워크 연결이 끊겨 API 호출 하나가 응답 없이 매달린 채
+멈춤(로그 파일 갱신이 1시간 25분 이상 정지, 프로세스는 `Responding: True`였지만 진행
+없음). 원인 확인 후 프로세스 kill + 부분 로그(349episode, 그중 300개는 FC라 비용
+손실 거의 없음) 삭제 후 재시작. `powercfg /change standby-timeout-ac 0`로 재발 방지
+(데스크탑이라 lid-close/배터리 걱정은 없음, AC 유지만 하면 됨).
+
+**마감일 착오 정정 (중요)**: 진행 속도(811/6400 episode, 3시간 24분 소요)로 선형 추정한
+결과 전체 완료까지 ~27시간이 걸릴 것으로 보여, `benchmark/CLAUDE.md`에 적혀 있던 "마감
+2026-08-05 14:00" 기준으로는 5시간 이상 초과할 것이라는 판단하에 병렬화(mapping별로
+프로세스를 4개로 쪼개 동시 실행)를 제안했음 -- 그런데 사용자 확인 결과 **2026-08-05는
+멘토링 일정이지 제출 마감이 아니었음**. 실제 학술제 마감은 **8월 말**로, 지금 실행
+속도(순차, 한 프로세스)로도 전혀 문제없이 여유 있음. `benchmark/CLAUDE.md`의 "마감"
+절을 정정함. 이 착오로 진행 중이던 실행을 죽이고 재시작하려던 계획은 취소 -- **원래
+켜져 있던 순차 실행(전체 mapping A->B->C->D, `--out result/mapping_robustness.json`)을
+그대로 둔 것이 결과적으로 맞는 선택이었음**(병렬화는 코드 변경 없이 `--mappings <하나>`로
+프로세스를 나눠 동시 실행하면 된다는 방법론 자체는 유효하게 남겨둠 -- 진짜 시간이
+촉박한 상황이 오면 재사용 가능).
+
+**비용 실측 (n=1 episode, openrouter 8개 모델, 2026-08-03)**: claude-opus-4.6 $0.0354,
+claude-sonnet-4.6 $0.0210, kimi-k3 $0.0480, grok-4.5 $0.0220, thinkingmachines-inkling
+$0.0181, qwen3.6-plus $0.00336, qwen3-vl-32b-instruct $0.000207, nemotron(free) $0 --
+합계 $0.148/episode. 400-episode(4매핑x100) 기준 단순 환산 시 openrouter 8개 합계 약
+$59, 단 이전(2026-08-02) n=10 파일럿의 claude-opus-4.6($35.96)/qwen3.6-plus($0.33)
+수치와 비교하면 n=1이라 변동폭이 큼 -- n=10 수치를 claude/qwen에 대입해 재계산하면
+총합이 약 $80으로 수렴, 사용자가 최종적으로 "$70-80 러프 추정"으로 합의.
+
+**A_conservative 매핑 중간 결과 (16개 중 8개 agent 완료 시점, SE+ 기준)**: claude-sonnet-4.6
+0.586 > claude-opus-4.6 0.560 > gpt-5.5 0.500 > gpt-4o 0.295 > FC-30 0.233 > FC-1 0.165 >
+FC-10 0.160 >> gpt-4o-mini 0.0014. 논문 핵심 발견("GPT-4o-mini는 가장 단순한 FC
+베이스라인조차 못 이긴다")과 같은 방향으로 재현됨(오히려 격차가 논문보다 더 크게
+벌어짐) -- gpt-4o-mini를 바닥 앵커로 유지하기로 한 2026-08-03 결정이 실측으로 뒷받침됨.
+흥미로운 반전: "추론 vs 일상" 이분법으로 짝지은 Claude Opus/Sonnet 4.6 쌍에서 더 가벼운
+Sonnet이 오히려 SE+가 더 높게 나옴. 이 시점은 아직 1개 매핑, 16개 중 8개 agent만
+완료된 중간 결과이므로 최종 결론으로 인용 금지 -- 전체 완료 후 재확인.
+
+
+## 2026-08-04 (이어서) — 정식 실행 중 크래시 2건 수정 (sigmoid 오버플로 + API 500 재시도)
+
+**크래시 1 -- `kernel.py` sigmoid OverflowError**: A_conservative 매핑 11번째 agent
+(gemini-3.1-pro-preview)에서 `math.exp(-x)` OverflowError로 전체 프로세스 사망.
+원인 추적: `accept_prob`의 `g`가 `concede_magnitude_speed()`/`rigidity()`를 거쳐
+`(가격차)/R`(R=p_max-p_min) 항을 포함하는데, 이 나눗값에 상한이 없어 agent가 유난히
+큰(또는 범위를 벗어난, env.py의 `_price_out_of_bounds` violation으로 허용되는 케이스)
+가격을 부르면 g가 극단적으로 음수로 튈 수 있음 -- 그러면 `sigmoid`가 `exp(-x)`를
+그대로 계산하다 오버플로. 수학적으로는 그런 극단값도 sigmoid가 0으로 수렴하는 게
+맞는 답이라 로직 버그는 아니고, 구현이 그 경우를 못 버틴 것. `kernel.py`의 `sigmoid()`를
+x>=0/x<0 분기하는 수치안정 버전으로 교체(항상 |exponent|<=0만 계산, 언더플로는 안전,
+오버플로 자체가 안 남). `sanity_check.py`(18개 체크) 재실행해서 기존 검증된 kernel
+동작을 안 깨뜨리는 것 확인.
+
+**크래시 2 -- OpenAI `InternalServerError`(500)**: D_nonlinear 매핑에서 gpt-5.5 셀 초반에
+OpenAI 서버가 일시적 500(`server_error`)을 반환하며 또 전체 프로세스 사망. 이건 우리
+코드/로직 문제가 아니라 순수 외부 서버 일시 장애 -- openai SDK 자체 기본 재시도
+(max_retries=2)로도 안 풀린 사례가 실측됨. `llm_agent.py`의 `policy()`에 재시도 루프
+추가(최대 4회, 5/10/15/20초 백오프) -- 단 재시도 대상은 `InternalServerError`(5xx)/
+`RateLimitError`(429)/`APIConnectionError`(네트워크)로만 한정, `BadRequestError`(400,
+우리 요청 자체가 잘못됨)나 `AuthenticationError`(401, 키 문제)처럼 재시도해도 절대 안
+풀리는 에러까지 삼키면 진짜 버그를 숨기게 되므로 제외.
+
+**재개 방식 (사용자 지정, 파일명 컨벤션 확립)**: 매핑별로 episode 기록 파일을 분리하는
+쪽으로 정리 -- `result/mapping_{A,B,C,D}_robustness_episodes.jsonl` +
+`result/mapping_{A,B,C,D}_robustness.json`. A_conservative는 크래시 시점에 이미 완료된
+10개 agent(1000episode, FC-1/10/30 + gpt-5.5/gpt-4o-mini/gpt-4o/claude-opus-4.6/
+claude-sonnet-4.6/qwen3.6-plus/kimi-k3)를 살리기 위해, gemini의 미완성 스트레이 기록
+10개만 걸러내고(`grep -v`) 나머지 6개 agent(gemini-3.1-pro-preview/gemma-4-31b-it/
+qwen3-vl-32b-instruct/grok-4.5/nemotron-3-nano-omni-reasoning/thinkingmachines-inkling)만
+`--agents`로 지정해 같은 episodes 파일에 이어쓰기(append)로 재개. 요약 json은 재개
+실행이 6-agent 기준으로 다시 계산되므로 같은 파일에 안 겹치도록 별도 이름
+(`mapping_A_robustness_rest.json`) 사용 -- 최종 분석은 요약 json이 아니라 raw
+episodes.jsonl 4개를 합쳐서 다시 집계하는 병합 스크립트로 처리 예정(아직 미작성).
+
+
+## 2026-08-05 — Gemini/Gemma provider="google" -> "openrouter"로 되돌림 (일일 요청 한도 발견)
+
+**크래시 3 -- Google Gemini API 일일 요청 한도**: A_conservative 이어달리기 중
+gemini-3.1-pro-preview 셀에서 `openai.RateLimitError` 429. 에러 메시지 원문:
+`Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_
+model_per_day, limit: 250, model: gemini-3.1-pro`, retry delay ~9시간. 이건 크레딧/결제
+문제가 아니라 **모델당 하루 250 요청**이라는 별도 한도 -- 100-episode 셀 하나가 협상
+턴수 감안하면 200~800회 호출이 필요해서, 애초에 하루 안에 셀 하나도 못 끝내는 구조였음.
+gemma-4-31b-it/gemini-3.6-flash도 모델별로 각자 250/day 한도를 갖고 있어(quotaMetric이
+모델 단위) 조만간 똑같이 걸릴 것으로 판단.
+
+**결정**: gemini-3.1-pro-preview/gemma-4-31b-it를 `provider="google"` 직결에서 다시
+`provider="openrouter"`로 되돌림(모델 문자열 `"google/gemini-3.1-pro-preview"`/
+`"google/gemma-4-31b-it"`, 스모크테스트 통과 확인). 논문 §H.1.1도 "LLMs are called via
+OpenRouter"라 명시 -- 애초에 Gemini도 OpenRouter로 부르는 게 논문 방법론과 일치했음.
+2026-08-03에 "개인 Google 크레딧으로 비용 절감" 목적으로 google 직결을 도입했던 결정은
+이 배치 규모(4매핑×100episode)에서는 결제 여부와 무관한 요청수 한도 때문에 폐기 --
+`llm_agent.py`의 `provider="google"` 코드 경로 자체는 남겨둠(더 작은 스케일에서는 여전히
+유효), `mapping_robustness.py`의 `default_agents()`만 openrouter로 교체.
+
+**참고**: 이 한도는 순수 요청 "횟수"라 재시도 로직(2026-08-04 추가, 5/10/15/20초 백오프)으로는
+못 뚫음 -- 서버가 알려준 재시도 대기시간이 9시간이라 짧은 백오프로 커버할 수 있는 성격의
+장애가 아니었음. `_RETRYABLE_API_ERRORS`에 `RateLimitError`를 넣어둔 게 이번엔 오히려
+"재시도해도 소용없는 에러를 4번 헛되이 재시도"한 셈이지만, 진짜 일시적 429(너무 빠른
+연속 호출 같은)에는 여전히 유효하므로 그대로 둠.
+
+
+## 2026-08-05 (이어서) — 크래시 4: JSONDecodeError도 재시도 대상에 추가
+
+C_aggressive 정식 실행 중 thinkingmachines-inkling 셀 73/100에서 또 죽음 --
+`json.decoder.JSONDecodeError: Expecting value`가 `httpx`의 `response.json()` 파싱
+단계에서 그대로 터짐. 응답 바디가 중간에 잘린 것으로 추정(네트워크 문제) -- 이건
+openai SDK 예외로 안 감싸이는 raw `json.JSONDecodeError`라, 2026-08-04에 추가한
+`_RETRYABLE_API_ERRORS`(InternalServerError/RateLimitError/APIConnectionError) 셋
+중 어느 것도 안 잡았음. `llm_agent.py`의 `_RETRYABLE_API_ERRORS`에 `json.JSONDecodeError`
+추가.
+
+**재개**: 15개 agent는 이미 완료, inkling만 73/100 -- `resume_partial_cell.py`로
+74~100 이어붙임(gemini 때와 동일 패턴, 확인된 안전한 절차). C_aggressive는 이걸로
+16개 agent 전부 완료 예정.
+
+**패턴 정리**: 지금까지 정식 실행 중 만난 크래시 4종 -- (1) 절전모드 네트워크 끊김,
+(2) kernel.py sigmoid 오버플로(수정됨), (3) openai.InternalServerError/RateLimitError/
+APIConnectionError(재시도 로직으로 커버), (4) json.JSONDecodeError(이번에 커버). 전부
+"한 번 겪고 나서 그 카테고리를 재시도/수정 가능하게 만드는" 방식으로 대응 -- 남은
+매핑(D)에서도 새로운 유형이 또 나올 수 있다는 전제로 계속 지켜볼 것.

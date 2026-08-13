@@ -31,7 +31,17 @@ def other_role(role_A: Role) -> Role:
 
 
 def sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + math.exp(-x))
+    """수치안정 버전 (2026-08-04 수정) -- 원래 `1/(1+exp(-x))` 그대로였는데, x가 크게
+    음수로 튀면(예: concede_magnitude_speed가 R 대비 비정상적으로 큰 가격차를 나누는
+    경우, decisions_log.md 참고) exp(-x)가 오버플로로 죽었다. 수학적으로는 그런 극단값도
+    그냥 0/1로 수렴하는 게 맞는 답이라 로직 버그는 아니고, 이 구현만 그 경우를 못 버텼음.
+    x>=0/x<0로 분기해서 항상 |exponent|<=0인 쪽만 계산하면(exp가 언더플로할지언정
+    오버플로는 안 함) 결과는 수학적으로 동일하면서 절대 안 죽는다."""
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
 
 
 def deadline_remaining(k: int, K: int) -> float:

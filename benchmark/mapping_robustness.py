@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from tqdm import tqdm
+
 from data_loader import load_items
 from env import PRICE_IMPACT_MAPPINGS, REGIMES, Item
 from fixed_concession_agent import FC_RATES, make_fixed_concession_policy
@@ -102,6 +104,59 @@ def default_agents() -> list[AgentConfig]:
       that support image input" 404로 탈락(비전 미지원 -- 이 벤치마크는 이미지 필수라
       애초에 평가 대상이 될 수 없음) -- moonshotai/kimi-k3로 교체, 스모크테스트에서 이미지
       기반 결함 인용까지 확인됨.
+    - gemini-3.1-pro-preview/gemma-4-31b-it (2026-08-03 추가, **2026-08-05 provider
+      재변경**): 논문(Table 9)에도 있는 Gemini 3.1 Pro Preview/Gemma 4 31B IT. 처음엔
+      OpenRouter 마진을 피하려고 `provider="google"`로 직결했는데(사용자 Google 계정
+      크레딧, llm_agent.py 모듈 docstring 참고), 정식 실행 중 `RateLimitError` 429로
+      확인됨 -- Google Gemini API가 **모델당 하루 250 요청**(`generate_requests_per_
+      model_per_day`)으로 막혀있어(크레딧/결제와 무관한 별도 한도), 100-episode 셀 하나가
+      필요로 하는 호출 수(협상 턴수 감안 200~800회)에도 못 미침. 논문도 실제로는 Gemini를
+      OpenRouter로 불렀다는 걸 재확인(§H.1.1 "LLMs are called via OpenRouter") -- 결국
+      `provider="openrouter"`, 모델 문자열 `"google/gemini-3.1-pro-preview"`/
+      `"google/gemma-4-31b-it"`로 되돌림(decisions_log.md 2026-08-05 참고). 이제 이 두
+      agent도 다른 OpenRouter agent와 같은 연구실 예산에서 나감 -- "개인 Google 크레딧으로
+      비용 절감" 전략은 이 배치 규모에서는 폐기.
+    - qwen3-vl-32b-instruct/thinkingmachines-inkling (2026-08-03 추가, 사용자 지정 --
+      Qwen3.6-Plus와 다른 사이즈/계열의 오픈 웨이트 추가 비교, inkling은 "요즘 SOTA급
+      오픈 웨이트로 화제"라는 사용자 판단). 둘 다 openrouter로 스모크테스트 통과. **주의
+      (methods/limitations에 남길 것)**: thinkingmachines/inkling은 스모크 1-episode에서
+      ground_truth_defects가 빈 아이템(결함 없음)에 대해 "rust on the chain", "scratches
+      on the frame", "staining/wear on the seat" 등 실재하지 않는 결함을 사진에서 봤다고
+      주장하며 가격을 깎았다 -- hallucination_rate가 실제로 잡아야 할 실패 패턴의 실측
+      사례. 표본 1개라 로스터에서 빼진 않았지만(사용자 결정), 정식 실행 결과에서 이
+      agent의 hallucination_rate를 우선 확인할 것.
+    - claude-sonnet-4.6/gpt-4o (2026-08-03 추가, 사용자 지정): 팀원 제안(벤더당 여러 티어
+      비교)을 받아들여 Claude/GPT 쪽에 티어 하나씩 추가. gpt-4o는 2026-08-01에 "세대
+      뒤처짐"으로 gpt-5.5에 자리를 내주고 빠졌던 모델인데, 이번엔 그 자리를 대체하는 게
+      아니라 gpt-5.5(프론티어 슬롯)와 별도로 "구세대 GPT" 비교 포인트로 재투입된 것 --
+      gpt-4o-mini(약한 모델 바닥 앵커)와는 다른 목적. 스모크테스트 둘 다 실 결함(scratch)을
+      정확히 인용하며 협상 완료.
+    - gemini-3.6-flash (2026-08-03 추가, 사용자 지정): 팀원 제안 중 보류했던 Gemini 3-티어
+      확장을 사용자가 최종적으로 채택 -- Gemini 쪽도 Claude/GPT처럼 Pro(gemini-3.1-pro-preview)
+      + 경량 티어(flash) 비교 구도로 맞춤. `provider="google"`로 직결(개인 크레딧). 스모크
+      테스트에서 실 결함(rust)을 정확히 인용하며 협상 완료.
+    - grok-4.5/mimo-v2.5/nemotron-3-nano-omni-30b-a3b-reasoning (2026-08-03 추가, 사용자
+      지정): 논문 13개 로스터의 GLM-5.1(텍스트 전용이라 이 벤치마크는 이미지 필수 --
+      평가 대상 불가)/Doubao-Seed-2.0-Pro(2.0-pro는 현재 미제공, 2.0-lite뿐이라 논문
+      버전과 안 맞음) 자리를 대체하는 새 벤더들 -- xAI(논문의 Grok 4.2를 최신 버전 4.5로),
+      Xiaomi(논문엔 없는 새 벤더), NVIDIA(마찬가지로 새 벤더, omni-multimodal reasoning
+      모델). 셋 다 openrouter 스모크테스트 통과, 결함 없는 아이템에서 grok-4.5는 결함을
+      지어내지 않고 정확히 판단. `nemotron-...:free`는 OpenRouter 무료 티어라 100-episode
+      정식 실행 때 rate limit으로 막힐 수 있음 -- 실행 전 재확인 필요.
+
+    **최종 정리 (2026-08-03, 사용자 철학 기반 재정렬)**: "벤더당 여러 티어"보다 "벤더 안
+    명확한 이분법 + 벤더 다양성"으로 로스터 원칙을 재정의 -- GPT(프론티어 vs 구세대: gpt-5.5
+    vs gpt-4o), Claude(추론 vs 일상: opus vs sonnet), Qwen(범용 vs VL 특화: 3.6-plus vs
+    3-vl-32b), Gemini(상용 vs 오픈웨이트: 3.1-pro vs gemma-4), 그리고 짝 없이 벤더
+    다양성만으로 넣는 kimi-k3/grok-4.5/thinkingmachines-inkling/nemotron-...(nvidia,
+    inkling/nemotron은 깔끔한 이분법엔 안 맞지만 "벤치마크는 커버리지가 중요하다"는
+    사용자 판단으로 유지). gpt-4o-mini는 한 번 제외 논의됐다가("바닥을 미리 정하고
+    가는 건 발견이 아니라 조작") 최종적으로 유지 결정 -- 논문에서 gpt-4o-mini가 바닥
+    앵커인 이유가 "그냥 약해서"가 아니라 "가장 단순한 FC 베이스라인조차 못 이기는
+    유일한 모델"이라는 진단 포인트라서, 이 metric들의 변별력 자체를 검증할 캘리브레이션
+    기준으로 필요하다는 반론(Claude)을 받아들임. gemini-3.6-flash/xiaomi-mimo-v2.5는
+    이 철학에서 자리가 없어 제외하되 **코드는 지우지 않고 주석 처리**로 남김(사용자 지정
+    컨벤션 -- 나중에 예산 여유 생기면 바로 되살릴 수 있게).
     """
     return [
         AgentConfig("FC-1", lambda: make_fixed_concession_policy(FC_RATES["FC-1"]), cites_evidence=False),
@@ -109,9 +164,19 @@ def default_agents() -> list[AgentConfig]:
         AgentConfig("FC-30", lambda: make_fixed_concession_policy(FC_RATES["FC-30"]), cites_evidence=False),
         AgentConfig("gpt-5.5", lambda: make_llm_agent_policy(model="gpt-5.5", provider="openai")),
         AgentConfig("gpt-4o-mini", lambda: make_llm_agent_policy(model="gpt-4o-mini", provider="openai")),
+        AgentConfig("gpt-4o", lambda: make_llm_agent_policy(model="gpt-4o", provider="openai")),
         AgentConfig("claude-opus-4.6", lambda: make_llm_agent_policy(model="anthropic/claude-opus-4.6", provider="openrouter")),
+        AgentConfig("claude-sonnet-4.6", lambda: make_llm_agent_policy(model="anthropic/claude-sonnet-4.6", provider="openrouter")),
         AgentConfig("qwen3.6-plus", lambda: make_llm_agent_policy(model="qwen/qwen3.6-plus", provider="openrouter")),
         AgentConfig("kimi-k3", lambda: make_llm_agent_policy(model="moonshotai/kimi-k3", provider="openrouter")),
+        AgentConfig("gemini-3.1-pro-preview", lambda: make_llm_agent_policy(model="google/gemini-3.1-pro-preview", provider="openrouter")),
+        #AgentConfig("gemini-3.6-flash", lambda: make_llm_agent_policy(model="google/gemini-3.6-flash", provider="openrouter")),
+        AgentConfig("gemma-4-31b-it", lambda: make_llm_agent_policy(model="google/gemma-4-31b-it", provider="openrouter")),
+        AgentConfig("qwen3-vl-32b-instruct", lambda: make_llm_agent_policy(model="qwen/qwen3-vl-32b-instruct", provider="openrouter")),
+        AgentConfig("grok-4.5", lambda: make_llm_agent_policy(model="x-ai/grok-4.5", provider="openrouter")),
+        #AgentConfig("mimo-v2.5", lambda: make_llm_agent_policy(model="xiaomi/mimo-v2.5", provider="openrouter")),
+        AgentConfig("nemotron-3-nano-omni-reasoning", lambda: make_llm_agent_policy(model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", provider="openrouter")),
+        AgentConfig("thinkingmachines-inkling", lambda: make_llm_agent_policy(model="thinkingmachines/inkling", provider="openrouter")),
     ]
 
 
@@ -167,7 +232,11 @@ def run_cell(
     run_meta = {"mapping": mapping, "agent": agent_cfg.label, "family": family, "regime": regime, "seed": seed}
 
     records = []
-    for i in range(1, episodes + 1):
+    # tqdm 진행률 표시 (2026-08-04 추가, 사용자 요청) -- 셀 하나가 최대 100episode라
+    # 느린 agent(예: kimi-k3)는 몇 분씩 걸리는데 그동안 터미널에 아무 신호가 없어서
+    # "죽었나 도는 중인가" 구분이 안 됐다. agent_cfg.label 붙여서 지금 몇 번째 (agent,
+    # mapping) 셀인지도 같이 보이게 함.
+    for i in tqdm(range(1, episodes + 1), desc=f"[{mapping}] {agent_cfg.label}", unit="ep"):
         item = item_schedule[i - 1]
         p_max = category_p_max[item.category]
         ep_rng = episode_rng(seed, i)
