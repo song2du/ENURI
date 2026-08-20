@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="ENURI — Evidence Negotiation Using Reasoning over Images. 시각 증거 기반 협상 벤치마크.">
+<title>ENURI</title>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg: #ffffff;
+    --bg-2: #f1f2f5;
+    --ink: #0b0d10;
+    --ink-muted: #5b6270;
+    --ink-faint: #8b93a0;
+    --detect: #1550ff;
+    --detect-soft: #e9edff;
+    --value: #ff7a1a;
+    --value-soft: #ffedda;
+    --flag: #e5342b;
+    --flag-soft: #fde6e4;
+    --line: #e3e5ea;
+    --line-strong: #c7cad3;
+    --shadow: 0 1px 2px rgba(11,13,16,.05), 0 16px 40px -20px rgba(11,13,16,.25);
+    --r: 10px;
+    --font-display: "Bricolage Grotesque", "Pretendard", sans-serif;
+    --font-body: "Work Sans", "Noto Sans KR", -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Noto Sans Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b0d10; --bg-2: #15181c; --ink: #f1f2f4; --ink-muted: #9aa1ac; --ink-faint: #626870;
+      --detect: #6c93ff; --detect-soft: #182140; --value: #ffa35c; --value-soft: #331f0c;
+      --flag: #ff7a6e; --flag-soft: #331411; --line: #23262b; --line-strong: #34383f;
+      --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 40px -20px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b0d10; --bg-2: #15181c; --ink: #f1f2f4; --ink-muted: #9aa1ac; --ink-faint: #626870;
+    --detect: #6c93ff; --detect-soft: #182140; --value: #ffa35c; --value-soft: #331f0c;
+    --flag: #ff7a6e; --flag-soft: #331411; --line: #23262b; --line-strong: #34383f;
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 40px -20px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  ::selection { background: var(--value-soft); color: var(--ink); }
+  img { max-width: 100%; display: block; }
+  a { color: var(--detect); }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 40px); }
+
+  h1, h2, h3 { font-family: var(--font-display); font-weight: 700; text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 12px; padding: 4px 11px; border-radius: 999px; border: 1.5px solid var(--line-strong); color: var(--ink-muted); }
+  .pill.on-detect { border-color: var(--detect); color: var(--detect); background: var(--detect-soft); }
+
+  /* ---------- nav ---------- */
+  .topnav { position: sticky; top: 0; z-index: 50; background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+  .topnav-inner { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+  .brand { font-family: var(--font-display); font-weight: 800; font-size: 20px; }
+  .brand .dot { color: var(--value); }
+  .navlinks { display: flex; gap: 26px; font-family: var(--font-mono); font-size: 13px; }
+  .navlinks a { color: var(--ink-muted); text-decoration: none; }
+  .navlinks a:hover { color: var(--ink); }
+  @media (max-width: 640px) { .navlinks { display: none; } }
+
+  /* ---------- hero ---------- */
+  .hero { padding: clamp(48px, 8vw, 96px) 0 clamp(40px, 6vw, 64px); border-bottom: 1px solid var(--line); }
+  .hero-top { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; }
+  .hero h1 { font-size: clamp(48px, 9vw, 92px); line-height: 0.94; margin-bottom: 18px; }
+  .hero .kicker { font-family: var(--font-mono); font-size: clamp(13px, 1.6vw, 15px); color: var(--ink-muted); margin-bottom: 28px; }
+  .hero .thesis { font-size: clamp(18px, 2.4vw, 23px); max-width: 52ch; line-height: 1.5; }
+  .hero .thesis b { background: linear-gradient(to bottom, transparent 62%, var(--detect-soft) 62%); font-weight: 600; }
+  .cta-row { display: flex; gap: 12px; margin-top: 34px; flex-wrap: wrap; }
+  .btn { font-family: var(--font-mono); font-size: 13.5px; padding: 12px 20px; border-radius: 8px; text-decoration: none; border: 1.5px solid var(--ink); color: var(--ink); display: inline-flex; align-items: center; gap: 8px; transition: transform .12s ease; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-solid { background: var(--ink); color: var(--bg); }
+
+  .tldr { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+  .tldr-item { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border: 1.5px solid var(--line); border-radius: 999px; background: var(--bg-2); }
+  .tldr-n { font-family: var(--font-mono); font-weight: 700; font-size: 15px; color: var(--detect); }
+  .tldr-item:nth-child(3) .tldr-n { color: var(--value); }
+  .tldr-l { font-size: 13px; color: var(--ink-muted); }
+  @media (max-width: 640px) { .tldr-item { width: 100%; } }
+
+  .hero-visual { margin-top: clamp(24px, 4vw, 40px); border: 1.5px solid var(--line); border-radius: var(--r); overflow: hidden; box-shadow: var(--shadow); background: var(--bg-2); }
+  .hero-visual .frame-label { display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); border-bottom: 1px solid var(--line); }
+  .hero-visual .frame-label .rec { width: 8px; height: 8px; border-radius: 50%; background: var(--flag); display: inline-block; margin-right: 6px; }
+  .hero-visual img { width: 100%; }
+
+  /* ---------- section scaffold ---------- */
+  .block { padding: clamp(56px, 8vw, 92px) 0; border-bottom: 1px solid var(--line); }
+  .block-head { margin-bottom: clamp(28px, 4vw, 44px); }
+  .block-head h2 { font-size: clamp(28px, 4vw, 38px); margin: 10px 0 12px; }
+  .block-head p { font-size: 16.5px; color: var(--ink-muted); max-width: 62ch; margin: 0; }
+
+  .prose p { max-width: 68ch; margin: 0 0 16px; }
+  .prose p.muted { color: var(--ink-muted); }
+  .prose strong { color: var(--ink); }
+
+  /* ---------- mechanism (chat + gates) ---------- */
+  .mech-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: clamp(24px, 4vw, 48px); align-items: start; }
+  @media (max-width: 860px) { .mech-grid { grid-template-columns: 1fr; } }
+
+  .chat-card { background: var(--bg-2); border: 1.5px solid var(--line); border-radius: var(--r); padding: 20px; }
+  .chat-card .who { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 16px; }
+  .brow { display: flex; margin-bottom: 10px; }
+  .brow.r { justify-content: flex-end; }
+  .bub { max-width: 84%; padding: 11px 14px; border-radius: 14px; font-size: 14.5px; line-height: 1.45; }
+  .bub.a { background: var(--detect); color: #fff; border-bottom-left-radius: 3px; }
+  .bub.c { background: var(--bg); border: 1px solid var(--line-strong); border-bottom-right-radius: 3px; }
+  .bub .t { display: inline-block; margin-top: 7px; font-family: var(--font-mono); font-size: 10px; padding: 1px 8px; border-radius: 999px; }
+  .bub.a .t { background: rgba(255,255,255,.18); color: #fff; }
+  .bub.c .t.acc { background: var(--value-soft); color: var(--value); }
+
+  .gates { display: flex; flex-direction: column; gap: 22px; }
+  .gate { border: 1.5px solid var(--line); border-radius: var(--r); padding: 18px 20px; position: relative; }
+  .gate::before { content: attr(data-n); position: absolute; top: -11px; left: 18px; background: var(--bg); padding: 0 8px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); }
+  .gate.g1 { border-color: var(--detect); }
+  .gate.g2 { border-color: var(--value); }
+  .gate h4 { font-size: 19px; margin-bottom: 10px; }
+  .gate.g1 h4 { color: var(--detect); }
+  .gate.g2 h4 { color: var(--value); }
+  .branches { display: flex; gap: 8px; flex-wrap: wrap; }
+  .br { font-family: var(--font-mono); font-size: 12px; padding: 5px 10px; border-radius: 999px; }
+  .br.y { background: var(--detect-soft); color: var(--detect); }
+  .gate.g2 .br.y { background: var(--value-soft); color: var(--value); }
+  .br.n { background: var(--flag-soft); color: var(--flag); }
+  .mech-note { font-family: var(--font-mono); font-size: 12px; color: var(--ink-faint); margin-top: 4px; }
+
+  /* ---------- quadrant design ---------- */
+  .design-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: clamp(24px, 4vw, 48px); align-items: center; }
+  @media (max-width: 860px) { .design-grid { grid-template-columns: 1fr; } }
+  .design-grid > img { border: 1.5px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); }
+
+  table.w { border-collapse: separate; border-spacing: 6px; width: 100%; font-family: var(--font-mono); }
+  table.w td, table.w th { text-align: center; padding: 16px 10px; border-radius: 8px; font-size: 14px; }
+  table.w th { background: transparent; color: var(--ink-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 4px; }
+  table.w td { background: var(--bg-2); border: 1.5px solid var(--line); font-weight: 600; }
+  table.w td.sm { background: var(--detect-soft); border-color: var(--detect); color: var(--detect); font-size: 16px; }
+  table.w td.sa { background: var(--value-soft); border-color: var(--value); color: var(--value); }
+  table.w td.om { color: var(--flag); }
+
+  /* ---------- findings: exhibit cards ---------- */
+  .exhibits { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; }
+  @media (max-width: 860px) { .exhibits { grid-template-columns: 1fr; } }
+  .exhibit { border: 1.5px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--bg-2); display: flex; flex-direction: column; }
+  .exhibit .tab { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); border-bottom: 1px solid var(--line); }
+  .exhibit .tab .num { color: var(--ink); font-weight: 700; }
+  .exhibit .shot { background: var(--bg); padding: 14px; border-bottom: 1px solid var(--line); }
+  .exhibit .shot img { border-radius: 4px; }
+  .exhibit .body { padding: 20px 22px 24px; }
+  .exhibit h3 { font-size: 21px; margin-bottom: 10px; }
+  .exhibit p { color: var(--ink-muted); font-size: 14.5px; margin: 0 0 14px; }
+  .exhibit .stat { font-family: var(--font-mono); font-size: 13.5px; padding: 10px 13px; border-radius: 8px; background: var(--bg); border-left: 3px solid var(--detect); line-height: 1.5; }
+  .exhibit:nth-child(2n) .stat { border-left-color: var(--value); }
+  .exhibit .howto { font-size: 12.5px; color: var(--ink-faint); margin: 10px 0 14px; padding-left: 14px; border-left: 2px dotted var(--line-strong); }
+
+  .glossary { display: flex; gap: 14px; align-items: flex-start; padding: 16px 20px; border: 1.5px dashed var(--line-strong); border-radius: var(--r); margin-bottom: 28px; background: var(--bg-2); }
+  .glossary .g-icon { font-family: var(--font-mono); font-weight: 700; font-size: 13px; color: var(--detect); border: 1.5px solid var(--detect); border-radius: 6px; padding: 2px 7px; flex-shrink: 0; }
+  .glossary p { margin: 0; font-size: 14px; color: var(--ink-muted); line-height: 1.55; }
+  .glossary strong { color: var(--ink); }
+
+  /* ---------- scale stats ---------- */
+  .scale-grid { display: grid; grid-template-columns: repeat(5, 1fr); border: 1.5px solid var(--line); border-radius: var(--r); overflow: hidden; }
+  @media (max-width: 760px) { .scale-grid { grid-template-columns: repeat(2, 1fr); } }
+  .scale-cell { padding: 26px 18px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .scale-cell:nth-child(5n) { border-right: none; }
+  @media (max-width: 760px) { .scale-cell:nth-child(2n) { border-right: none; } }
+  .scale-cell .n { font-family: var(--font-mono); font-weight: 700; font-size: clamp(26px, 4vw, 34px); font-variant-numeric: tabular-nums; }
+  .scale-cell .l { font-size: 12.5px; color: var(--ink-muted); margin-top: 4px; }
+
+  /* ---------- team ---------- */
+  .team-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; max-width: 760px; }
+  @media (max-width: 640px) { .team-grid { grid-template-columns: 1fr; } }
+  .member .links-row { display: flex; gap: 16px; margin-top: 14px; }
+  .member { border: 1.5px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--bg-2); }
+  .member .photo-wrap { position: relative; aspect-ratio: 4/3.4; overflow: hidden; background: var(--bg); }
+  .member .photo-wrap img { width: 100%; height: 100%; object-fit: cover; object-position: center top; }
+  .member .role-tag { position: absolute; top: 12px; left: 12px; font-family: var(--font-mono); font-size: 10.5px; padding: 4px 10px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line-strong); color: var(--ink); }
+  .member .info { padding: 18px 20px 22px; }
+  .member .name { font-family: var(--font-display); font-weight: 700; font-size: 20px; }
+  .member .meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-muted); margin-top: 3px; }
+  .member ul { margin: 12px 0 0; padding: 0 0 0 16px; font-size: 13.5px; color: var(--ink-muted); }
+  .member ul li { margin-bottom: 4px; }
+  .member .li-link { margin-top: 14px; display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 12px; text-decoration: none; color: var(--detect); }
+  .member.advisor .photo-wrap { display: flex; align-items: center; justify-content: center; }
+  .member.advisor .mono-init { font-family: var(--font-display); font-weight: 800; font-size: 46px; color: var(--ink-faint); }
+
+  /* ---------- footer ---------- */
+  footer { padding: 44px 0 60px; }
+  .foot-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; }
+  .foot-links { display: flex; gap: 18px; font-family: var(--font-mono); font-size: 12.5px; }
+  .foot-links a { color: var(--ink-muted); text-decoration: none; }
+  .fine { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint); }
+</style>
+
+<nav class="topnav">
+  <div class="wrap topnav-inner">
+    <div class="brand">ENURI<span class="dot">.</span></div>
+    <div class="navlinks">
+      <a href="#motivation">문제의식</a>
+      <a href="#mechanism">작동 방식</a>
+      <a href="#design">결함 설계</a>
+      <a href="#findings">핵심 발견</a>
+      <a href="#team">팀</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="hero-top">
+      <span class="pill on-detect">ICLR 투고 예정</span>
+      <span class="pill">PULSE · Gachon University</span>
+    </div>
+    <h1>ENURI</h1>
+    <div class="kicker">Evidence Negotiation Using Reasoning over Images</div>
+    <p class="thesis">결함은 사진에만 있습니다. 텍스트 설명엔 절대 나오지 않습니다.<br>협상하는 AI는 그걸 <b>알아채고</b>, 알아챈 만큼 <b>제대로 값을 매길 수</b> 있을까요?</p>
+    <div class="cta-row">
+      <a class="btn btn-solid" href="https://github.com/song2du/ENURI" target="_blank" rel="noopener">GitHub 저장소 ↗</a>
+      <a class="btn" href="#findings">핵심 발견 보기</a>
+    </div>
+    <div class="tldr">
+      <div class="tldr-item"><span class="tldr-n">13/13</span><span class="tldr-l">agent 전부, 결함이 안 보이면 발견 자체를 못합니다</span></div>
+      <div class="tldr-item"><span class="tldr-n">10/11</span><span class="tldr-l">발견해도, 겉보기와 실제가 다르면 가격을 잘못 매깁니다</span></div>
+      <div class="tldr-item"><span class="tldr-n">0건</span><span class="tldr-l">결함을 지어내서 이득을 본 agent는 없습니다</span></div>
+    </div>
+    <figure class="hero-visual">
+      <div class="frame-label"><span><span class="rec"></span>2×2 evidence-difficulty grid</span><span>real Craigslist photos</span></div>
+      <img src="assets/quadrant-examples.png" alt="4분면 결함 예시" />
+    </figure>
+  </div>
+</header>
+
+<section class="block" id="motivation">
+  <div class="wrap">
+    <div class="block-head">
+      <div class="eyebrow">문제의식</div>
+      <h2>왜 &ldquo;증거&rdquo;를 따로 통제해야 하는가</h2>
+      <p>기존 협상 벤치마크는 대부분 텍스트만 다루거나, 이미지가 있어도 그 증거가 얼마나 어렵게 숨겨져 있는지를 통제하지 않습니다.</p>
+    </div>
+    <div class="prose">
+      <p>NegotiationArena, TERMS-Bench 같은 벤치마크는 LLM이 협상 대화를 직접 만들지만 시각 정보가 아예 없습니다. AgenticPay처럼 이미지를 쓰는 벤치마크도 있지만, 그 이미지가 실제로 얼마나 알아보기 쉬운지, 겉보기와 진짜 가치가 일치하는지를 설계 시점에 통제하지 않습니다 — 그래서 결과가 나빠도 &ldquo;못 알아봐서&rdquo;인지 &ldquo;알아봤는데 가격을 잘못 매겨서&rdquo;인지 구분할 수 없습니다.</p>
+      <p class="muted">ENURI는 결함을 이미지 생성 단계부터 <strong>보이는 정도(Obvious/Subtle)</strong>와 <strong>겉보기-실제 일치 여부(Aligned/Misaligned)</strong> 두 축으로 통제합니다. 그 결과 &ldquo;발견했는가(Detection)&rdquo;와 &ldquo;제대로 값을 매겼는가(Valuation)&rdquo;를 완전히 분리해서 잴 수 있습니다.</p>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="mechanism">
+  <div class="wrap">
+    <div class="block-head">
+      <div class="eyebrow">작동 방식</div>
+      <h2>협상은 어떻게 진행되는가</h2>
+      <p>평가 대상은 단 하나 — Buyer 또는 Seller 역할을 맡은 LLM/VLM 에이전트뿐입니다. 상대방(counterpart)은 고정된 규칙에 따라 반응하는 시뮬레이션입니다.</p>
+    </div>
+    <div class="mech-grid">
+      <div class="chat-card">
+        <div class="who"><span>Agent</span><span>Counterpart</span></div>
+        <div class="brow"><div class="bub a">Offer: $80 — 패널에서 균열을 발견해서, 이 이상은 어렵습니다.<span class="t">cites: crack</span></div></div>
+        <div class="brow r"><div class="bub c">$80은 너무 낮습니다 — $95는 어떻습니까?</div></div>
+        <div class="brow"><div class="bub a">균열을 감안해서 $85까지 맞춰드리겠습니다.<span class="t">cites: crack</span></div></div>
+        <div class="brow r"><div class="bub c">좋습니다 — $85로 합의하겠습니다.<span class="t acc">ACCEPT</span></div></div>
+      </div>
+      <div class="prose">
+        <p><strong>에이전트</strong>는 매 라운드 아이템 사진과 자신의 예약가격, 지금까지의 대화를 보고 OFFER / ACCEPT / REJECT를 결정합니다. 결함을 언급하려면 <code style="font-family:var(--font-mono);font-size:.9em;">cites</code> 필드에 어떤 종류인지 구조화된 형태로 함께 적어야 합니다.</p>
+        <p class="muted"><strong style="color:var(--ink-muted)">상대방(counterpart)</strong>은 LLM이 자유롭게 판단하는 게 아니라, 정해진 공식으로 수락 확률을 계산합니다 — 가격이 얼마나 유리한지, 남은 시간, 그리고 에이전트가 <em>진짜</em> 결함을 인용했는지가 이 공식에 들어갑니다. 지어낸 결함은 0점 처리됩니다.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:56px;">
+      <h3 style="font-size:24px;margin-bottom:8px;">같은 인용도, 두 번 채점됩니다</h3>
+      <p class="prose muted" style="max-width:60ch;">결함을 언급할 때마다 두 가지를 순서대로 확인합니다 — 이 둘은 완전히 별개의 점수입니다.</p>
+      <div class="gates" style="max-width:520px;margin-top:20px;">
+        <div class="gate g1" data-n="GATE 1">
+          <h4>진짜로 뭔가를 발견했는가?</h4>
+          <div class="branches">
+            <span class="br y">Yes — 실제로 있던 결함</span>
+            <span class="br n">No — 없거나 지어낸 것 → DETECTION 실패</span>
+          </div>
+        </div>
+        <div class="gate g2" data-n="GATE 2 · Gate 1 통과 시에만">
+          <h4>가격을 그만큼 제대로 반영했는가?</h4>
+          <div class="branches">
+            <span class="br y">Yes — 실제 가치만큼 가격이 움직임</span>
+            <span class="br n">No — 너무 적게/많이, 또는 무반응</span>
+          </div>
+        </div>
+      </div>
+      <div class="mech-note">→ 발견(Detection)과 가격 반영(Valuation)은 별개로 채점됩니다. 최종 협상 가격 하나만 보지 않는 이유입니다.</div>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="design">
+  <div class="wrap">
+    <div class="block-head">
+      <div class="eyebrow">결함 설계</div>
+      <h2>2×2 evidence-difficulty grid</h2>
+      <p>모든 결함은 생성 시점에 두 축으로 통제됩니다. 이 라벨은 에이전트에게 절대 공개되지 않습니다.</p>
+    </div>
+    <div class="design-grid">
+      <img src="assets/quadrant-examples.png" alt="4분면 결함 예시" />
+      <div>
+        <table class="w">
+          <tr><th></th><th>Aligned</th><th>Misaligned</th></tr>
+          <tr><th>Obvious</th><td>OA · 0.30</td><td class="om">OM · 0.15</td></tr>
+          <tr><th>Subtle</th><td class="sa">SA · 0.90</td><td class="sm">SM · 1.20</td></tr>
+        </table>
+        <div class="prose" style="margin-top:20px;">
+          <p class="muted">이 숫자는 &ldquo;가격을 얼마나 깎아야 하는가&rdquo;가 아니라 &ldquo;이 인용이 얼마나 진짜 의미 있는 신호인가&rdquo;를 나타내는 가중치입니다. 뻔히 보이는 걸 말하면 약한 신호(0.30), 안 보이는데 실제로 심각한 문제까지 짚으면 가장 강한 신호(1.20)로 취급됩니다.</p>
+          <p class="muted">특히 <strong style="color:var(--detect)">Subtle-Misaligned</strong>는 발견도 어렵고 판단도 어려운 유일한 칸 — 가장 까다로운 케이스로 설계했습니다.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="findings">
+  <div class="wrap">
+    <div class="block-head">
+      <div class="eyebrow">핵심 발견</div>
+      <h2>16개 에이전트, 6,400개 협상</h2>
+      <p>13개 LLM/VLM과 3개 규칙 기반 baseline을 4가지 가격 기준 아래 각각 100회씩 실험했습니다.</p>
+    </div>
+
+    <div class="glossary">
+      <span class="g-icon">SE⁺?</span>
+      <p><strong>Surplus Extracted</strong> — 협상 가능한 가격 구간(ZOPA) 중 이 agent가 실제로 챙긴 이익의 비율이다. <strong>1에 가까울수록</strong> 최대한 유리하게 협상했다는 뜻이고, <strong>0이면</strong> 거의 못 챙겼다는 뜻이다. 아래 그림들의 기본 성적표라고 보면 된다.</p>
+    </div>
+
+    <div class="exhibits">
+      <div class="exhibit">
+        <div class="tab"><span class="num">EXHIBIT 01</span><span>헤드라인 순위</span></div>
+        <div class="shot"><img src="assets/leaderboard.png" alt="agent별 SE+ 랭킹" /></div>
+        <div class="body">
+          <div class="howto">읽는 법: 막대 길이 = SE⁺ 점수, 검은 선 = 95% 신뢰구간(길수록 불확실), 색 = 모델 등급.</div>
+          <h3>SE⁺ 기준, 상위권은 거의 동률</h3>
+          <p>ZOPA 대비 실제로 확보한 협상 이익(SE⁺)으로 줄을 세우면 Claude Opus 4.6·Grok 4.5·Kimi K3가 공동 선두이고, 상위 9개 agent의 신뢰구간은 겹칩니다.</p>
+          <div class="stat">GPT-4o-mini: SE⁺ = 0.04 — 사실상 무작위 가격 책정 수준</div>
+        </div>
+      </div>
+
+      <div class="exhibit">
+        <div class="tab"><span class="num">EXHIBIT 02</span><span>핵심 발견</span></div>
+        <div class="shot"><img src="assets/dissociation-2x2.png" alt="Detection과 Grounding의 2x2 분리" /></div>
+        <div class="body">
+          <div class="howto">읽는 법: 두 그림 다 같은 2×2 격자(세로=눈에 띄는 정도, 가로=겉보기-실제 일치 여부). 색이 진하고 숫자가 클수록 그 능력이 좋다는 뜻. 왼쪽=발견율, 오른쪽=가격 반영 정확도.</div>
+          <h3>발견과 가격 반영은 다른 능력이다</h3>
+          <p>같은 2×2 격자에 Detection(발견율)과 Grounding(가격 반영 정확도)을 나란히 놓으면, 두 능력이 완전히 다른 축에서 무너집니다.</p>
+          <div class="stat">Detection: Obvious 0.56 → Subtle 0.28 (13/13 agent 유의미)<br>Grounding: 3칸 0.92–1.00 vs Subtle-Misaligned만 0.73</div>
+        </div>
+      </div>
+
+      <div class="exhibit">
+        <div class="tab"><span class="num">EXHIBIT 03</span><span>확대</span></div>
+        <div class="shot"><img src="assets/valuation.png" alt="Valuation bias, Obvious vs Subtle" /></div>
+        <div class="body">
+          <div class="howto">읽는 법: 점 하나 = agent 한 명, 가로선 = 95% 신뢰구간. 점이 0보다 왼쪽에 있으면 &ldquo;실제로 더 심각한데도 가격을 덜 깎았다&rdquo;는 뜻(과소반영). 오른쪽 그래프(Subtle)에서 점 대부분이 왼쪽에 몰려있는 게 핵심.</div>
+          <h3>가격 반영 실패는 한 칸에 집중된다</h3>
+          <p>Obvious 조건에선 Aligned/Misaligned 사이 의미 있는 가격 차이가 없습니다 — 문제는 Subtle, 그중에서도 Misaligned입니다.</p>
+          <div class="stat">Subtle-Misaligned: 10/11 agent가 유의미하게 실제 가치보다 낮게 책정 (다중비교 보정 후)</div>
+        </div>
+      </div>
+
+      <div class="exhibit">
+        <div class="tab"><span class="num">EXHIBIT 04</span><span>agent별 실패 지점</span></div>
+        <div class="shot"><img src="assets/sm-funnel.png" alt="agent별 SM 실패 funnel" /></div>
+        <div class="body">
+          <div class="howto">읽는 법: agent 한 명당 막대 하나, 100%를 4가지 색으로 분해. 회색=아예 언급 안 함, 주황=딴 걸 언급, 파랑=맞게 언급했지만 형식이 안 맞음, 초록=완벽하게 잡음. 초록이 길수록 잘한 것.</div>
+          <h3>같은 실패도, 이유는 제각각</h3>
+          <p>가장 어려운 Subtle-Misaligned 칸에서 각 agent가 정확히 어디서 놓치는지 분해했습니다.</p>
+          <div class="stat">Gemini 3.1 Pro 35% 클린 히트, Claude Opus 4.6 0%(41%는 딴 걸 인용), Gemma-4-31B는 81% 무응답</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <div class="block-head">
+      <div class="eyebrow">실험 규모</div>
+      <h2>숫자로 보는 ENURI</h2>
+    </div>
+    <div class="scale-grid">
+      <div class="scale-cell"><div class="n">16</div><div class="l">평가 대상 (LLM/VLM 13 + baseline 3)</div></div>
+      <div class="scale-cell"><div class="n">6,400</div><div class="l">협상 에피소드</div></div>
+      <div class="scale-cell"><div class="n">4</div><div class="l">가격-영향 매핑</div></div>
+      <div class="scale-cell"><div class="n">4</div><div class="l">아이템 카테고리</div></div>
+      <div class="scale-cell"><div class="n">324</div><div class="l">검수 통과 아이템</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="team">
+  <div class="wrap">
+    <div class="block-head">
+      <div class="eyebrow">팀</div>
+      <h2>PULSE</h2>
+      <p>가천대학교</p>
+    </div>
+    <div class="team-grid">
+      <div class="member">
+        <div class="photo-wrap"><span class="role-tag">Team Lead</span><img src="assets/team-yidu-song.png" alt="Yidu Song" /></div>
+        <div class="info">
+          <div class="name">Yidu Song</div>
+          <div class="meta">Gachon University · CS, 3rd year</div>
+          <ul>
+            <li>RA at HCI Lab (Prof. Ahyoung Choi), Gachon Univ.</li>
+            <li>Human-AI Interaction, Negotiation Agent</li>
+          </ul>
+          <div class="links-row">
+            <a class="li-link" href="https://www.linkedin.com/in/song2du/" target="_blank" rel="noopener">LinkedIn ↗</a>
+            <a class="li-link" href="https://github.com/song2du" target="_blank" rel="noopener">GitHub ↗</a>
+          </div>
+        </div>
+      </div>
+      <div class="member">
+        <div class="photo-wrap"><span class="role-tag">Researcher</span><img src="assets/team-gyuyeon-lim.png" alt="Gyuyeon Lim" /></div>
+        <div class="info">
+          <div class="name">Gyuyeon Lim</div>
+          <div class="meta">Gachon University · CS, 4th year</div>
+          <ul>
+            <li>RA at SKIML (Prof. Jay-Yoon Lee), SNU</li>
+            <li>Representations, Machine Learning</li>
+          </ul>
+          <div class="links-row">
+            <a class="li-link" href="https://www.linkedin.com/in/gyuyeon-lim-a24016278/" target="_blank" rel="noopener">LinkedIn ↗</a>
+            <a class="li-link" href="https://github.com/lky473736" target="_blank" rel="noopener">GitHub ↗</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-row">
+    <div class="fine">ENURI — Evidence Negotiation Using Reasoning over Images · PULSE, Gachon University</div>
+    <div class="foot-links">
+      <a href="https://github.com/song2du/ENURI" target="_blank" rel="noopener">GitHub</a>
+      <a href="#mechanism">작동 방식</a>
+      <a href="#findings">핵심 발견</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
