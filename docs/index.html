@@ -206,6 +206,7 @@
     <div class="brand">ENURI<span class="dot">.</span></div>
     <div class="navlinks">
       <a href="#motivation">문제의식</a>
+      <a href="#overview">전체 구조</a>
       <a href="#dataset">데이터셋</a>
       <a href="#mechanism">작동 방식</a>
       <a href="#design">결함 설계</a>
@@ -251,6 +252,23 @@
     <div class="prose">
       <p>NegotiationArena, TERMS-Bench, 그리고 시장 구조 면에서 가장 정교한 AgenticPay(1:1부터 다대다 시장까지 110개 이상 태스크)까지 — 전부 LLM이 협상 대화를 직접 만들지만, 이미지를 입력으로 받는 벤치마크는 하나도 없습니다. ENURI는 저희가 확인한 한 <strong>협상 대화 생성 + 시각 증거 입력을 결합한 최초의 벤치마크</strong>입니다.</p>
       <p class="muted">ENURI는 결함을 이미지 생성 단계부터 <strong>보이는 정도(Obvious/Subtle)</strong>와 <strong>겉보기-실제 일치 여부(Aligned/Misaligned)</strong> 두 축으로 통제합니다. 그 결과 &ldquo;발견했는가(Detection)&rdquo;와 &ldquo;제대로 값을 매겼는가(Valuation)&rdquo;를 완전히 분리해서 잴 수 있습니다.</p>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="overview">
+  <div class="wrap">
+    <div class="block-head">
+      <div class="eyebrow">시스템 개요</div>
+      <h2>전체 구조 한눈에 보기</h2>
+      <p>데이터셋 → 협상 환경(커널) → 에피소드 기록 → 9개 지표, 네 단계로 이어집니다.</p>
+    </div>
+    <figure class="hero-visual">
+      <div class="frame-label"><span><span class="rec"></span>system overview</span><span>Dataset → Environment → Episode Result → Metrics</span></div>
+      <img src="assets/overall-architecture.png" alt="ENURI 전체 시스템 구조" />
+    </figure>
+    <div class="prose" style="margin-top:20px;">
+      <p class="muted">평가 대상 agent(한 번에 하나)가 고정 공식으로 반응하는 counterpart와 최대 K턴 협상합니다. counterpart의 매턴 수락 확률은 &ldquo;일반적인 협상 요소 + 증거 항(진짜 결함을 인용했는가 × 사분면 가중치)&rdquo; 공식으로 계산되고, 끝난 에피소드는 전부 기록되어 9개 지표(SE⁺, AGR⁺, CSE⁺, CritViol%, 인용 정확도/재현율, 환각률, 활용도, 보정 ρ)로 요약됩니다.</p>
     </div>
   </div>
 </section>
