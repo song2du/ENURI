@@ -261,14 +261,14 @@
     <div class="block-head">
       <div class="eyebrow">시스템 개요</div>
       <h2>전체 구조 한눈에 보기</h2>
-      <p>데이터셋 → 협상 환경(커널) → 에피소드 기록 → 9개 지표, 네 단계로 이어집니다.</p>
+      <p>데이터셋 → 협상 환경(커널) → 증거 추론 축 → 지표, 네 단계로 이어집니다.</p>
     </div>
     <figure class="hero-visual">
-      <div class="frame-label"><span><span class="rec"></span>system overview</span><span>Dataset → Environment → Episode Result → Metrics</span></div>
+      <div class="frame-label"><span><span class="rec"></span>system overview</span><span>Dataset → Environment → Evidence Reasoning Axis → Metrics</span></div>
       <img src="assets/overall-architecture.png" alt="ENURI 전체 시스템 구조" />
     </figure>
     <div class="prose" style="margin-top:20px;">
-      <p class="muted">평가 대상 agent(한 번에 하나)가 고정 공식으로 반응하는 counterpart와 최대 K턴 협상합니다. counterpart의 매턴 수락 확률은 &ldquo;일반적인 협상 요소 + 증거 항(진짜 결함을 인용했는가 × 사분면 가중치)&rdquo; 공식으로 계산되고, 끝난 에피소드는 전부 기록되어 9개 지표(SE⁺, AGR⁺, CSE⁺, CritViol%, 인용 정확도/재현율, 환각률, 활용도, 보정 ρ)로 요약됩니다.</p>
+      <p class="muted">평가 대상 agent(한 번에 하나)가 고정 공식으로 반응하는 counterpart와 최대 K턴 협상합니다. counterpart의 매턴 수락 확률은 &ldquo;일반적인 협상 요소 + 증거 항(진짜 결함을 인용했는가 × 사분면 가중치)&rdquo; 공식으로 계산되고, 이 가중치는 인용된 결함이 2×2 사분면 중 어느 칸에 속하는지로 정해집니다. 끝난 에피소드는 전부 기록되어 9개 지표(SE⁺, AGR⁺, CSE⁺, CritViol%, 인용 정확도/재현율, 환각률, 활용도, 보정 ρ)로 요약됩니다.</p>
     </div>
   </div>
 </section>
@@ -386,12 +386,12 @@
 
       <div class="exhibit">
         <div class="tab"><span class="num">EXHIBIT 02</span><span>핵심 발견</span></div>
-        <div class="shot"><img src="assets/dissociation-2x2.png" alt="Detection과 Grounding의 2x2 분리" /></div>
+        <div class="shot"><img src="assets/dissociation-2x2.png" alt="Detection과 Valuation의 2x2 분리" /></div>
         <div class="body">
           <div class="howto">읽는 법: 두 그림 다 같은 2×2 격자(세로=눈에 띄는 정도, 가로=겉보기-실제 일치 여부). 색이 진하고 숫자가 클수록 그 능력이 좋다는 뜻. 왼쪽=발견율, 오른쪽=가격 반영 정확도.</div>
           <h3>발견과 가격 반영은 다른 능력이다</h3>
-          <p>같은 2×2 격자에 Detection(발견율)과 Grounding(가격 반영 정확도)을 나란히 놓으면, 두 능력이 완전히 다른 축에서 무너집니다.</p>
-          <div class="stat">Detection: Obvious 0.56 → Subtle 0.28 (13/13 agent 유의미)<br>Grounding: 3칸 0.92–1.00 vs Subtle-Misaligned만 0.73</div>
+          <p>같은 2×2 격자에 Detection(발견율)과 Valuation(가격 반영 정확도)을 나란히 놓으면, 두 능력이 완전히 다른 축에서 무너집니다.</p>
+          <div class="stat">Detection: Obvious 0.56 → Subtle 0.28 (13/13 agent 유의미)<br>Valuation: 3칸 0.92–1.00 vs Subtle-Misaligned만 0.73</div>
         </div>
       </div>
 
